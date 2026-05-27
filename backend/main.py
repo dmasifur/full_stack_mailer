@@ -6,8 +6,6 @@ from app.core.logging import setup_logging
 
 setup_logging()
 
-app = FastAPI(
-    title=settings.APP_NAME
-)
+app = FastAPI(title=settings.APP_NAME)
 
 app.include_router(health_router)

@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     APP_NAME: str = "Full Stack Mailer"
     APP_ENV: str = "development"
@@ -9,10 +10,7 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str
 
-    model_config = SettingsConfigDict(
-        env_file = ".env",
-        case_sensitive = True
-    )
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
 
 settings = Settings()
