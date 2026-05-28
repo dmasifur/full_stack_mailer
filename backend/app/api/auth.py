@@ -61,7 +61,7 @@ async def microsoft_callback(code: str | None = Query(default=None)):
 
         token_data = token_response.json()
 
-        access_token = token_data["access_token"]
+        access_token = token_data.get("access_token")
         refresh_token = token_data.get("refresh_token")
 
         async with httpx.AsyncClient() as client:
