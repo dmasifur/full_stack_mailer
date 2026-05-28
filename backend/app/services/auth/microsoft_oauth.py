@@ -17,7 +17,8 @@ SCOPES = [
     "openid",
     "profile",
     "email",
-    "Mail.Send"
+    "Mail.Send",
+    "Mail.Send.Shared"
     "User.Read"
 ]
 
