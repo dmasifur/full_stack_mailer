@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     API_PORT: int = 8000
 
     DATABASE_URL: str
-    
+
     MICROSOFT_CLIENT_ID: str
     MICROSOFT_CLIENT_SECRET: str
     MICROSOFT_TENANT_ID: str = "common"
