@@ -3,7 +3,7 @@ import secrets
 
 import httpx
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import RedirectResponse
 
 from sqlalchemy.orm import Session
@@ -34,7 +34,15 @@ def microsoft_login():
     )
     
 @router.get("/microsoft/callback")
-async def microsoft_callback(code:str):
+async def microsoft_callback(code:str | None = Query(default=None)):
+    if not code:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Missing authorization code."
+                "start login from '/auth/microsoft/login'"
+            )
+        )
     async with httpx.AsyncClient() as client:
         token_response = await client.post(
             MICROSOFT_TOKEN_URL,
@@ -84,9 +92,18 @@ async def microsoft_callback(code:str):
             db: Session = SessionLocal()
             
             try:
+                
+                user_email = profile.get("mail") or profile.get("userPrincipalName")
+                
+                if not user_email:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Microsoft account email not available"
+                    )
+                
                 existing_user = (
                     db.query(User).filter(
-                        User.email == profile["mail"]
+                        User.email == user_email
                     )
                     .first()
                 )
@@ -98,7 +115,7 @@ async def microsoft_callback(code:str):
                     user = existing_user
                 else:
                     user = User(
-                        email = profile["mail"],
+                        email = user_email,
                         full_name = profile.get("displayName"),
                         microsoft_id = profile["id"],
                         access_token=access_token,
@@ -108,6 +125,12 @@ async def microsoft_callback(code:str):
                     db.add(user)
                 
                 db.commit()
+                db.refresh(user)
+                
+                response_data = {
+                    "message": "Microsoft login successful.",
+                    "email": user.email,
+                }
                 
             except Exception:
                 db.rollback()
@@ -118,7 +141,4 @@ async def microsoft_callback(code:str):
             finally:
                 db.close()
                 
-            return {
-                 "message": "Microsoft login successful.",
-                 "email": user.email,
-            }
+            return response_data
