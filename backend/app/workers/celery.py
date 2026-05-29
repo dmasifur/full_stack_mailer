@@ -23,5 +23,3 @@ celery_app.conf.update(
         "ssl_cert_reqs": ssl.CERT_NONE,
     },
 )
-
-

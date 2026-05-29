@@ -15,7 +15,11 @@ from app.models.campaign_recipient import CampaignRecipient
 from app.models.email_log import EmailLog
 from app.models.user import User
 
-from app.services.email_sender import EmailSendError, send_email_via_graph_api, EmailAuthError
+from app.services.email_sender import (
+    EmailSendError,
+    send_email_via_graph_api,
+    EmailAuthError,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -86,16 +90,13 @@ def send_campaign_task(
                     time.sleep(EMAIL_DELAY_SECONDS)
 
                 except EmailAuthError:
-                    logger.exception(
-                        "Auth failure. "
-                        "Campaign paused."
-                    )
-                    
+                    logger.exception("Auth failure. Campaign paused.")
+
                     campaign.status = "paused"
-                    
+
                     db.commit()
                     return
-                
+
                 except EmailSendError:
                     logger.exception(
                         "Retryable send error. recipient=%s", recipient.email

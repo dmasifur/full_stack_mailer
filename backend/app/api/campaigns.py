@@ -74,7 +74,10 @@ def start_campaign(campaign_id: str, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=404, detail="Campaign not found.")
 
     if campaign.status not in ["draft", "scheduled"]:
-        raise HTTPException(status_code=400, detail="Campaign cannot be started because the campaign status did not match.")
+        raise HTTPException(
+            status_code=400,
+            detail="Campaign cannot be started because the campaign status did not match.",
+        )
 
     campaign.status = "scheduled"
 
