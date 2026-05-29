@@ -1,21 +1,18 @@
 import logging
 import secrets
 
-import httpx
-
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import RedirectResponse
-
+import httpx
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.services.auth.microsoft_oauth import (
     MICROSOFT_TOKEN_URL,
     build_authorization_url,
 )
-
-from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 

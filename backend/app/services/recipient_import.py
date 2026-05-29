@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 from app.models.campaign_recipient import CampaignRecipient
 from app.services.email_validation import validate_email_address
 
-
 logger = logging.getLogger(__name__)
 
 COMMIT_BATCH_SIZE = 100

@@ -1,26 +1,20 @@
 import logging
 import time
 
-from app.workers.celery import celery_app
-
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.models.campaign import Campaign
-
 from app.models.campaign_recipient import CampaignRecipient
-
 from app.models.email_log import EmailLog
 from app.models.user import User
-
 from app.services.email_sender import (
+    EmailAuthError,
     EmailSendError,
     send_email_via_graph_api,
-    EmailAuthError,
 )
-
+from app.workers.celery import celery_app
 
 logger = logging.getLogger(__name__)
 
@@ -106,9 +100,9 @@ def send_campaign_task(
                     logger.exception(
                         "Unexpected recipient failure. recipient=%s", recipient.email
                     )
-        
+
         campaign.status = db.refresh(campaign)
-        
+
         if campaign.status != "paused":
             campaign.status = "completed"
             db.commit()

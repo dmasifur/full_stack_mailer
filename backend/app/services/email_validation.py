@@ -1,6 +1,5 @@
 import dns.resolver
-
-from email_validator import validate_email, EmailNotValidError
+from email_validator import EmailNotValidError, validate_email
 
 
 class EmailValidationResult:
@@ -25,7 +24,7 @@ def validate_email_address(email: str) -> EmailValidationResult:
 
         return EmailValidationResult(is_valid=True)
     except EmailNotValidError as exc:
-        return EmailValidationResult(is_valid=False, reason=f"invalid_email:{str(exc)}")
+        return EmailValidationResult(is_valid=False, reason=f"invalid_email:{exc!s}")
     except dns.resolver.NXDOMAIN:
         return EmailValidationResult(
             is_valid=False,
@@ -36,5 +35,5 @@ def validate_email_address(email: str) -> EmailValidationResult:
 
     except Exception as exc:
         return EmailValidationResult(
-            is_valid=False, reason=f"dns_validation_error: {str(exc)}"
+            is_valid=False, reason=f"dns_validation_error: {exc!s}"
         )

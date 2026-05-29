@@ -1,18 +1,15 @@
+from datetime import datetime
 import logging
 from pathlib import Path
 from uuid import uuid4
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-
-
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db
 from app.models.campaign import Campaign
 from app.services.recipient_import import import_recipients_from_csv
 from app.workers.send_campaign import send_campaign_task
-
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +56,7 @@ def upload_recipients_csv(
     except Exception:
         logger.exception("Failed to upload recipient CSV")
 
-        raise HTTPException(status_code=500, detail="Failed to process CSV upload.")
+        raise HTTPException(status_code=500, detail="Failed to process CSV upload.") from Exception
 
     finally:
         if save_file_path.exists():

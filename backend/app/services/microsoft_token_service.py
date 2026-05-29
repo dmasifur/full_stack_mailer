@@ -3,10 +3,9 @@ class TokenRefreshError(Exception):
 
 
 def refresh_access_token():
-    
+
     """
     Todo: complete this func
     """
-    
+
     raise NotImplementedError
-    

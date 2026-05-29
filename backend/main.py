@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 
-from app.api.health import router as health_router
-from app.api.campaigns import router as campaings_router
 from app.api.auth import router as auth_router
+from app.api.campaigns import router as campaings_router
+from app.api.health import router as health_router
 from app.core.config import settings
 from app.core.logging import setup_logging
 

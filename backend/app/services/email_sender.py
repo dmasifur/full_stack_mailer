@@ -4,7 +4,6 @@ import requests
 
 from app.models.user import User
 
-
 logger = logging.getLogger(__name__)
 
 GRAPH_SENDMAIL_URL = "https://graph.microsoft.com/v1.0/me/sendMail"
