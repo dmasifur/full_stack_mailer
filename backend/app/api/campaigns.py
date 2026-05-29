@@ -56,7 +56,9 @@ def upload_recipients_csv(
     except Exception:
         logger.exception("Failed to upload recipient CSV")
 
-        raise HTTPException(status_code=500, detail="Failed to process CSV upload.") from Exception
+        raise HTTPException(
+            status_code=500, detail="Failed to process CSV upload."
+        ) from Exception
 
     finally:
         if save_file_path.exists():
