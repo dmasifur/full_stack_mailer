@@ -163,3 +163,39 @@ def pause_campaign(
     return {
         "message": "Campaign paused successfully.",
     }
+
+
+@router.post("/{campaign_id}/resume")
+def resume_campaign(
+    campaign_id: str,
+    db: Session = Depends(get_db),
+) -> dict:
+
+    campaign = db.get(Campaign, campaign_id)
+
+    if not campaign:
+        raise HTTPException(
+            status_code=404,
+            detail="Campaign not found.",
+        )
+
+    if campaign.status != "paused":
+        raise HTTPException(
+            status_code=400,
+            detail="Only paused campaigns can be resumed.",
+        )
+
+    campaign.status = "scheduled"
+
+    db.commit()
+
+    send_campaign_task.delay(campaign_id)
+
+    logger.info(
+        "Campaign resumed. campaign=%s",
+        campaign_id,
+    )
+
+    return {
+        "message": "Campaign resumed successfully.",
+    }
