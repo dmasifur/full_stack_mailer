@@ -106,8 +106,12 @@ def send_campaign_task(
                     logger.exception(
                         "Unexpected recipient failure. recipient=%s", recipient.email
                     )
-        campaign.status = "completed"
-        db.commit()
+        
+        campaign.status = db.refresh(campaign)
+        
+        if campaign.status != "paused":
+            campaign.status = "completed"
+            db.commit()
 
     except Exception:
         db.rollback()
