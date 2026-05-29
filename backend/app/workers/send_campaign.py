@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 10
 
-EMAIL_DELAY_SECONDS = 1
+EMAIL_DELAY_SECONDS = 5
 
 
 @celery_app.task(
