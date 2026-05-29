@@ -146,7 +146,6 @@ def _send_single_recipient(
     db.commit()
 
     try:
-    
         send_email_via_graph_api(
             user=user,
             recipient_email=recipient.email,

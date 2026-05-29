@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 from uuid import uuid4
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
@@ -86,3 +87,45 @@ def start_campaign(campaign_id: str, db: Session = Depends(get_db)) -> dict:
     send_campaign_task.delay(campaign_id)
 
     return {"message": "Campaigned queued successfully."}
+
+
+@router.post("/{campaign_id}/schedule")
+def schedule_campaign(
+    campaign_id: str,
+    scheduled_at: datetime,
+    db: Session = Depends(get_db),
+) -> dict:
+
+    campaign = db.get(Campaign, campaign_id)
+
+    if not campaign:
+        raise HTTPException(
+            status_code=404,
+            detail="Campaign not found.",
+        )
+
+    if campaign.status != "draft":
+        raise HTTPException(
+            status_code=400,
+            detail="Only draft campaigns can be scheduled.",
+        )
+
+    campaign.status = "scheduled"
+    campaign.scheduled_at = scheduled_at
+
+    db.commit()
+
+    send_campaign_task.apply_async(
+        args=[campaign_id],
+        eta=scheduled_at,
+    )
+
+    logger.info(
+        "Campaign scheduled. campaign=%s eta=%s",
+        campaign_id,
+        scheduled_at,
+    )
+
+    return {
+        "message": "Campaign scheduled successfully.",
+    }
