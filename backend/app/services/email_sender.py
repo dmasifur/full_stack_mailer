@@ -1,0 +1,52 @@
+import logging
+
+import requests
+
+from app.models.user import User
+
+
+logger = logging.getLogger(__name__)
+
+GRAPH_SENDMAIL_URL = "https://graph.microsoft.com/v1.0/me/sendMail"
+
+
+class EmailSendError(Exception):
+    pass
+
+
+class EmailAuthError(Exception):
+    pass
+
+
+def send_email_via_graph_api(
+    *, user: User, recipient_email: str, subject: str, html_body: str
+) -> None:
+    headers = {
+        "Authorization": (f"Bearer {user.access_token}"),
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {"ContentType": "HTML", "content": html_body},
+            "toRecipients": [{"emailAddress": {"address": recipient_email}}],
+        },
+        "saveToSentItems": True,
+    }
+
+    response = requests.post(
+        GRAPH_SENDMAIL_URL, headers=headers, json=payload, timeout=30
+    )
+
+    if response.status_code == 401:
+        raise EmailAuthError("Microsoft auth failed.")
+
+    if response.status_code >= 400:
+        logger.error(
+            "Graph API send failed. status=%s response=%s",
+            response.status_code,
+            response.text,
+        )
+
+        raise EmailSendError(f"Graph API send failed: {response.status_code}")

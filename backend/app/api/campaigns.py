@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_db
 from app.models.campaign import Campaign
 from app.services.recipient_import import import_recipients_from_csv
+from app.workers.send_campaign import send_campaign_task
 
 
 logger = logging.getLogger(__name__)
@@ -62,3 +63,26 @@ def upload_recipients_csv(
     finally:
         if save_file_path.exists():
             save_file_path.unlink(missing_ok=True)
+
+
+@router.post("/{campaign_id}/start")
+def start_campaign(campaign_id: str, db: Session = Depends(get_db)) -> dict:
+
+    campaign = db.get(Campaign, campaign_id)
+
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+
+    if campaign.status not in ["draft", "scheduled"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Campaign cannot be started because the campaign status did not match.",
+        )
+
+    campaign.status = "scheduled"
+
+    db.commit()
+
+    send_campaign_task.delay(campaign_id)
+
+    return {"message": "Campaigned queued successfully."}
