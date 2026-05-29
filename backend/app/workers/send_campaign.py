@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 10
 
-EMAIL_DELAY_SECONDS = 1
+EMAIL_DELAY_SECONDS = 5
 
 
 @celery_app.task(
@@ -106,8 +106,12 @@ def send_campaign_task(
                     logger.exception(
                         "Unexpected recipient failure. recipient=%s", recipient.email
                     )
-        campaign.status = "completed"
-        db.commit()
+        
+        campaign.status = db.refresh(campaign)
+        
+        if campaign.status != "paused":
+            campaign.status = "completed"
+            db.commit()
 
     except Exception:
         db.rollback()
@@ -146,7 +150,6 @@ def _send_single_recipient(
     db.commit()
 
     try:
-    
         send_email_via_graph_api(
             user=user,
             recipient_email=recipient.email,
