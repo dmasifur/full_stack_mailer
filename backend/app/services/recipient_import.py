@@ -52,14 +52,14 @@ def import_recipients_from_csv(
                 first_name=(row.get("first_name") or "").strip() or None,
                 last_name=(row.get("last_name") or "").strip() or None,
                 email=email,
-                dns_valid=validation_result.is_vliad,
-                status=("pending" if validation_result.is_vliad else "invalif"),
+                dns_valid=validation_result.is_valid,
+                status=("pending" if validation_result.is_valid else "invalid"),
                 failure_reason=validation_result.reason,
             )
 
             pending_objects.append(recipient)
 
-            if validation_result.is_vliad:
+            if validation_result.is_valid:
                 summary.imported += 1
             else:
                 summary.invalid += 1
@@ -67,17 +67,17 @@ def import_recipients_from_csv(
             if len(pending_objects) >= COMMIT_BATCH_SIZE:
                 _commit_batch(db=db, objects=pending_objects)
                 pending_objects.clear()
-            if pending_objects:
-                _commit_batch(db=db, objects=pending_objects)
+        if pending_objects:
+            _commit_batch(db=db, objects=pending_objects)
 
-            logger.info(
-                "Recipient import completed. total=%s imported=%s invalid=%s",
-                summary.total_rows,
-                summary.imported,
-                summary.invalid,
-            )
+        logger.info(
+            "Recipient import completed. total=%s imported=%s invalid=%s",
+            summary.total_rows,
+            summary.imported,
+            summary.invalid,
+        )
 
-            return summary
+        return summary
 
 
 def _commit_batch(db: Session, objects: list[CampaignRecipient]) -> None:

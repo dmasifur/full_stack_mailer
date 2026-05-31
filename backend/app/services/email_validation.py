@@ -8,7 +8,7 @@ class EmailValidationResult:
         is_valid: bool,
         reason: str | None = None,
     ) -> None:
-        self.is_vliad = is_valid
+        self.is_valid = is_valid
         self.reason = reason
 
 
@@ -18,7 +18,7 @@ def validate_email_address(email: str) -> EmailValidationResult:
         validated = validate_email(email)
 
         normalize_email = validated.email
-        domain = normalize_email.split("@"[1])
+        domain = normalize_email.split("@")[1]
 
         dns.resolver.resolve(domain, "MX")
 
