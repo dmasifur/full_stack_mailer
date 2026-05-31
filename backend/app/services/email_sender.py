@@ -3,6 +3,7 @@ import logging
 import requests
 
 from app.models.user import User
+from app.services.token_encryption import decrypt_token
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +37,10 @@ class EmailAuthError(EmailSendError):
 def send_email_via_graph_api(
     *, user: User, recipient_email: str, subject: str, html_body: str
 ) -> None:
+    plaintext_token = decrypt_token(user.access_token)
+
     headers = {
-        "Authorization": (f"Bearer {user.access_token}"),
+        "Authorization": f"Bearer {plaintext_token}",
         "Content-Type": "application/json",
     }
 

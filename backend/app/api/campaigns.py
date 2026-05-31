@@ -6,8 +6,9 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_db
+from app.api.dependencies import get_current_user, get_db
 from app.models.campaign import Campaign
+from app.models.user import User
 from app.services.recipient_import import import_recipients_from_csv
 from app.workers.send_campaign import send_campaign_task
 
@@ -20,14 +21,31 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 
-@router.post("/{campaign_id}/recipients/upload")
-def upload_recipients_csv(
-    campaign_id: str, file: UploadFile = File(...), db: Session = Depends(get_db)
-) -> dict:
-    campaign = db.get(Campaign, campaign_id)
+def _get_campaign_or_404(
+    campaign_id: str,
+    db: Session,
+    current_user: User,
+) -> Campaign:
+    campaign = (
+        db.query(Campaign)
+        .filter(Campaign.id == campaign_id, Campaign.user_id == current_user.id)
+        .first()
+    )
 
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found.")
+
+    return campaign
+
+
+@router.post("/{campaign_id}/recipients/upload")
+def upload_recipients_csv(
+    campaign_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    campaign = _get_campaign_or_404(campaign_id, db, current_user)
 
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files are supported.")
@@ -40,8 +58,9 @@ def upload_recipients_csv(
         with save_file_path.open("wb") as output:
             while chunk := file.file.read(1024 * 1024):
                 output.write(chunk)
+
         summary = import_recipients_from_csv(
-            db=db, campaign_id=campaign_id, file_path=save_file_path
+            db=db, campaign_id=str(campaign.id), file_path=save_file_path
         )
 
         return {
@@ -66,12 +85,12 @@ def upload_recipients_csv(
 
 
 @router.post("/{campaign_id}/start")
-def start_campaign(campaign_id: str, db: Session = Depends(get_db)) -> dict:
-
-    campaign = db.get(Campaign, campaign_id)
-
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found.")
+def start_campaign(
+    campaign_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    campaign = _get_campaign_or_404(campaign_id, db, current_user)
 
     if campaign.status not in ["draft", "scheduled"]:
         raise HTTPException(
@@ -83,9 +102,9 @@ def start_campaign(campaign_id: str, db: Session = Depends(get_db)) -> dict:
 
     db.commit()
 
-    send_campaign_task.delay(campaign_id)
+    send_campaign_task.delay(str(campaign.id))
 
-    return {"message": "Campaigned queued successfully."}
+    return {"message": "Campaign queued successfully."}
 
 
 @router.post("/{campaign_id}/schedule")
@@ -93,15 +112,9 @@ def schedule_campaign(
     campaign_id: str,
     scheduled_at: datetime,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
-
-    campaign = db.get(Campaign, campaign_id)
-
-    if not campaign:
-        raise HTTPException(
-            status_code=404,
-            detail="Campaign not found.",
-        )
+    campaign = _get_campaign_or_404(campaign_id, db, current_user)
 
     if campaign.status != "draft":
         raise HTTPException(
@@ -115,34 +128,22 @@ def schedule_campaign(
     db.commit()
 
     send_campaign_task.apply_async(
-        args=[campaign_id],
+        args=[str(campaign.id)],
         eta=scheduled_at,
     )
 
-    logger.info(
-        "Campaign scheduled. campaign=%s eta=%s",
-        campaign_id,
-        scheduled_at,
-    )
+    logger.info("Campaign scheduled. campaign=%s eta=%s", campaign_id, scheduled_at)
 
-    return {
-        "message": "Campaign scheduled successfully.",
-    }
+    return {"message": "Campaign scheduled successfully."}
 
 
 @router.post("/{campaign_id}/pause")
 def pause_campaign(
     campaign_id: str,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
-
-    campaign = db.get(Campaign, campaign_id)
-
-    if not campaign:
-        raise HTTPException(
-            status_code=404,
-            detail="Campaign not found.",
-        )
+    campaign = _get_campaign_or_404(campaign_id, db, current_user)
 
     if campaign.status != "running":
         raise HTTPException(
@@ -154,29 +155,18 @@ def pause_campaign(
 
     db.commit()
 
-    logger.info(
-        "Campaign paused. campaign=%s",
-        campaign_id,
-    )
+    logger.info("Campaign paused. campaign=%s", campaign_id)
 
-    return {
-        "message": "Campaign paused successfully.",
-    }
+    return {"message": "Campaign paused successfully."}
 
 
 @router.post("/{campaign_id}/resume")
 def resume_campaign(
     campaign_id: str,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
-
-    campaign = db.get(Campaign, campaign_id)
-
-    if not campaign:
-        raise HTTPException(
-            status_code=404,
-            detail="Campaign not found.",
-        )
+    campaign = _get_campaign_or_404(campaign_id, db, current_user)
 
     if campaign.status != "paused":
         raise HTTPException(
@@ -188,13 +178,8 @@ def resume_campaign(
 
     db.commit()
 
-    send_campaign_task.delay(campaign_id)
+    send_campaign_task.delay(str(campaign.id))
 
-    logger.info(
-        "Campaign resumed. campaign=%s",
-        campaign_id,
-    )
+    logger.info("Campaign resumed. campaign=%s", campaign_id)
 
-    return {
-        "message": "Campaign resumed successfully.",
-    }
+    return {"message": "Campaign resumed successfully."}

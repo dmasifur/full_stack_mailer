@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     MICROSOFT_TENANT_ID: str = "common"
     MICROSOFT_REDIRECT_URI: str
 
+    TOKEN_ENCRYPTION_KEY: str
+    ACCESS_TOKEN_TTL_SECONDS:str
+    SECRET_KEY:str
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
 

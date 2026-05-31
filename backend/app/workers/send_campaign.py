@@ -97,8 +97,7 @@ def send_campaign_task(
 
                 except RetryableEmailError:
                     logger.exception(
-                        "Retryable send error. recipients=%s",
-                        recipient.email
+                        "Retryable send error. recipients=%s", recipient.email
                     )
                     raise
                 except EmailSendError:
@@ -170,9 +169,7 @@ def _send_single_recipient(
             )
 
         except EmailAuthError:
-            logger.warning(
-                "Access token expired. Attempting refresh."
-            )
+            logger.warning("Access token expired. Attempting refresh.")
 
             try:
                 refresh_access_token(
@@ -181,20 +178,13 @@ def _send_single_recipient(
                 )
 
             except TokenRefreshError as exc:
-                logger.exception(
-                    "Token refresh failed."
-                )
+                logger.exception("Token refresh failed.")
 
-                raise EmailAuthError(
-                    "Unable to refresh token."
-                ) from exc
+                raise EmailAuthError("Unable to refresh token.") from exc
 
             db.refresh(user)
 
-            logger.info(
-                "Token refreshed successfully. "
-                "Retrying email send."
-            )
+            logger.info("Token refreshed successfully. Retrying email send.")
 
             send_email_via_graph_api(
                 user=user,
