@@ -1,10 +1,12 @@
 import logging
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 import httpx
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db
@@ -24,19 +26,19 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 _STATE_SALT = "oauth-state"
 _STATE_MAX_AGE = 300
 
+limiter = Limiter(key_func=get_remote_address)
+
 
 def _state_serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(settings.SECRET_KEY)
 
 
 @router.get("/microsoft/login")
-def microsoft_login() -> RedirectResponse:
+@limiter.limit("10/minute")
+def microsoft_login(request: Request) -> RedirectResponse:
     raw_state = secrets.token_urlsafe(32)
-
     signed_state = _state_serializer().dumps(raw_state, salt=_STATE_SALT)
-
     authorization_url = build_authorization_url(state=signed_state)
-
     return RedirectResponse(authorization_url)
 
 
@@ -52,9 +54,13 @@ async def microsoft_callback(
     try:
         _state_serializer().loads(state, salt=_STATE_SALT, max_age=_STATE_MAX_AGE)
     except SignatureExpired:
-        raise HTTPException(status_code=400, detail="OAuth state expired. Please log in again.") from SignatureExpired
+        raise HTTPException(
+            status_code=400, detail="OAuth state expired. Please log in again."
+        ) from SignatureExpired
     except BadSignature:
-        raise HTTPException(status_code=400, detail="Invalid OAuth state. Possible CSRF attempt.") from BadSignature
+        raise HTTPException(
+            status_code=400, detail="Invalid OAuth state. Possible CSRF attempt."
+        ) from BadSignature
 
     if not code:
         raise HTTPException(
@@ -76,7 +82,9 @@ async def microsoft_callback(
 
         if token_response.status_code != 200:
             logger.error("Failed to obtain Microsoft token: %s", token_response.text)
-            raise HTTPException(status_code=400, detail="Microsoft token exchange failed.")
+            raise HTTPException(
+                status_code=400, detail="Microsoft token exchange failed."
+            )
 
         token_data = token_response.json()
         access_token = token_data.get("access_token")
@@ -89,13 +97,17 @@ async def microsoft_callback(
 
         if profile_response.status_code != 200:
             logger.error("Failed to fetch Microsoft profile: %s", profile_response.text)
-            raise HTTPException(status_code=400, detail="Failed to fetch Microsoft profile.")
+            raise HTTPException(
+                status_code=400, detail="Failed to fetch Microsoft profile."
+            )
 
     profile = profile_response.json()
     user_email = profile.get("mail") or profile.get("userPrincipalName")
 
     if not user_email:
-        raise HTTPException(status_code=400, detail="Microsoft account has no accessible email.")
+        raise HTTPException(
+            status_code=400, detail="Microsoft account has no accessible email."
+        )
 
     encrypted_access_token = encrypt_token(access_token)
     encrypted_refresh_token = encrypt_token(refresh_token) if refresh_token else None

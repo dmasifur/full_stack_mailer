@@ -9,6 +9,7 @@ from app.models.campaign import Campaign
 from app.models.campaign_recipient import CampaignRecipient
 from app.models.email_log import EmailLog
 from app.models.user import User
+from app.services.campaign_state import transition
 from app.services.email_sender import (
     EmailAuthError,
     EmailSendError,
@@ -49,7 +50,7 @@ def send_campaign_task(
             logger.error("User not found for campaign.")
             return
 
-        campaign.status = "running"
+        transition(campaign, "running")
         db.commit()
 
         logger.info("Campaign started: %s", campaign_id)
@@ -60,7 +61,7 @@ def send_campaign_task(
             latest_campaign = db.get(Campaign, campaign_id)
 
             if not latest_campaign:
-                logger.error("Campaign dissappeared during send: %s", campaign_id)
+                logger.error("Campaign disappeared during send: %s", campaign_id)
                 return
 
             if latest_campaign.status == "paused":
@@ -90,21 +91,22 @@ def send_campaign_task(
                 except EmailAuthError:
                     logger.exception("Auth failure. Campaign paused.")
 
-                    campaign.status = "paused"
-
+                    transition(campaign, "paused")
                     db.commit()
                     return
 
                 except RetryableEmailError:
                     logger.exception(
-                        "Retryable send error. recipients=%s", recipient.email
+                        "Retryable send error. recipient=%s", recipient.email
                     )
                     raise
+
                 except EmailSendError:
                     logger.exception(
                         "Permanent send failure. recipient=%s", recipient.email
                     )
                     raise
+
                 except Exception:
                     logger.exception(
                         "Unexpected recipient failure. recipient=%s", recipient.email
@@ -114,13 +116,13 @@ def send_campaign_task(
         db.refresh(campaign)
 
         if campaign.status != "paused":
-            campaign.status = "completed"
+            transition(campaign, "completed")
             db.commit()
 
     except Exception:
         db.rollback()
 
-        logger.exception("Campaign send task failed.campaign=%s", campaign_id)
+        logger.exception("Campaign send task failed. campaign=%s", campaign_id)
 
         raise
 
@@ -209,6 +211,13 @@ def _send_single_recipient(
             recipient.email,
         )
 
+    # Re-raise retryable errors BEFORE the EmailSendError catch so Celery's
+    # autoretry_for can intercept them. EmailSendError is the parent class of
+    # RetryableEmailError; catching the parent first would swallow the subtype
+    # and mark the recipient as permanently failed.
+    except RetryableEmailError:
+        raise
+
     except EmailSendError as exc:
         db.rollback()
 
@@ -247,6 +256,7 @@ def _get_pending_recipients(
         .where(
             CampaignRecipient.campaign_id == campaign_id,
             CampaignRecipient.status == "pending",
+            CampaignRecipient.dns_valid.is_(True),
         )
         .limit(BATCH_SIZE)
         .with_for_update(skip_locked=True)

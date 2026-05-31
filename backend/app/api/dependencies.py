@@ -19,6 +19,8 @@ def get_db() -> Generator[Session]:
         yield db
     finally:
         db.close()
+
+
 def get_current_user(
     request: Request,
     db: Session = Depends(get_db),
@@ -36,7 +38,9 @@ def get_current_user(
     try:
         user_id = decode_access_token(token)
     except TokenExpiredError as exc:
-        raise HTTPException(status_code=401, detail="Session expired. Please log in again.") from exc
+        raise HTTPException(
+            status_code=401, detail="Session expired. Please log in again."
+        ) from exc
     except TokenInvalidError as exc:
         raise HTTPException(status_code=401, detail="Invalid token.") from exc
 

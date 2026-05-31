@@ -17,7 +17,7 @@ def _get_serializer() -> URLSafeTimedSerializer:
     if not secret:
         raise RuntimeError(
             "SECRET_KEY is not set. "
-            "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            'Generate one with: python -c "import secrets; print(secrets.token_hex(32))"'
         )
 
     return URLSafeTimedSerializer(secret)

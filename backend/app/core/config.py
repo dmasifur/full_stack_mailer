@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,10 +18,31 @@ class Settings(BaseSettings):
     MICROSOFT_REDIRECT_URI: str
 
     TOKEN_ENCRYPTION_KEY: str
-    ACCESS_TOKEN_TTL_SECONDS:str
-    SECRET_KEY:str
+    ACCESS_TOKEN_TTL_SECONDS: str
+    SECRET_KEY: str
+
+    # Example: "https://app.example.com,https://staging.example.com"
+    ALLOWED_ORIGINS_RAW: str = "http://localhost:3000"
+
+    # max CSV upload size in bytes (default 10 MB)
+    MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
+
+    @field_validator("ALLOWED_ORIGINS_RAW")
+    @classmethod
+    def _not_star_with_credentials(cls, v: str) -> str:
+        origins = [o.strip() for o in v.split(",") if o.strip()]
+        if "*" in origins:
+            raise ValueError(
+                "ALLOWED_ORIGINS_RAW must not contain '*' — "
+                "wildcard origins are incompatible with allow_credentials=True."
+            )
+        return v
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        return [o.strip() for o in self.ALLOWED_ORIGINS_RAW.split(",") if o.strip()]
 
 
 settings = Settings()
