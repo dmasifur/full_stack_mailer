@@ -217,7 +217,6 @@ def delete_campaign(
     logger.info("Campaign deleted. id=%s", campaign_id)
 
 
-
 @router.get("/{campaign_id}/cc-recipients", response_model=list[CcRecipientResponse])
 def list_cc_recipients(
     campaign_id: str,
@@ -297,7 +296,6 @@ def remove_cc_recipient(
 
     db.delete(cc)
     db.commit()
-
 
 
 @router.post(

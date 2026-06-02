@@ -12,7 +12,7 @@ MICROSOFT_TOKEN_URL = (
     f"{settings.MICROSOFT_TENANT_ID}/oauth2/v2.0/token"
 )
 
-SCOPES = ["offline_access", "openid", "profile", "email", "Mail.Send", "User.Read"]
+SCOPES = ["offline_access", "openid", "profile", "email", "Mail.Send", "User.Read", "Mail.Send.Shared"]
 
 
 def build_authorization_url(state: str) -> str:
