@@ -1,10 +1,17 @@
 import ssl
+
 from celery import Celery
 
 from app.core.config import settings
 
 celery_app = Celery(
-    "full_stack_mailer", broker=settings.REDIS_URL, backend=settings.REDIS_URL
+    "full_stack_mailer",
+    broker=settings.REDIS_URL,
+    backend=settings.REDIS_URL,
+    include=[
+        "app.workers.send_campaign",
+        "app.workers.validate_recipients",
+    ],
 )
 
 celery_app.conf.update(

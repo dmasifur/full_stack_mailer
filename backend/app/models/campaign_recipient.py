@@ -1,13 +1,19 @@
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
-
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-
 
 from app.models.base import BaseModel
 
 
 class CampaignRecipient(BaseModel):
     __tablename__ = "campaign_recipients"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "email",
+            name="uq_campaign_recipients_campaign_email",
+        ),
+    )
 
     campaign_id: Mapped[str] = mapped_column(
         ForeignKey("campaigns.id"),
@@ -30,16 +36,19 @@ class CampaignRecipient(BaseModel):
         nullable=False,
         index=True,
     )
-
+    # Nullable: set to True/False by the background DNS validation task.
+    # NULL means "not yet validated".
     dns_valid: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
-        nullable=False,
+        nullable=True,
     )
 
+    # pending_validation → pending (dns ok) or invalid (dns failed)
+    # pending → sending → sent / failed
     status: Mapped[str] = mapped_column(
         String(50),
-        default="pending",
+        default="pending_validation",
         nullable=False,
         index=True,
     )

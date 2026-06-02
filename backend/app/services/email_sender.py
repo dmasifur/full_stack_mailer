@@ -3,7 +3,7 @@ import logging
 import requests
 
 from app.models.user import User
-
+from app.services.token_encryption import decrypt_token
 
 logger = logging.getLogger(__name__)
 
@@ -11,18 +11,36 @@ GRAPH_SENDMAIL_URL = "https://graph.microsoft.com/v1.0/me/sendMail"
 
 
 class EmailSendError(Exception):
-    pass
+    """
+    Base email send exception.
+    """
 
 
-class EmailAuthError(Exception):
-    pass
+class RetryableEmailError(EmailSendError):
+    """
+    Temporary/transient send failure.
+    """
+
+
+class PermanentEmailError(EmailSendError):
+    """
+    Non-retryable send failure.
+    """
+
+
+class EmailAuthError(EmailSendError):
+    """
+    Access token invalid/expired.
+    """
 
 
 def send_email_via_graph_api(
     *, user: User, recipient_email: str, subject: str, html_body: str
 ) -> None:
+    plaintext_token = decrypt_token(user.access_token)
+
     headers = {
-        "Authorization": (f"Bearer {user.access_token}"),
+        "Authorization": f"Bearer {plaintext_token}",
         "Content-Type": "application/json",
     }
 
@@ -40,7 +58,13 @@ def send_email_via_graph_api(
     )
 
     if response.status_code == 401:
-        raise EmailAuthError("Microsoft auth failed.")
+        raise EmailAuthError("Microsoft access token expired.")
+
+    if response.status_code == 429:
+        raise RetryableEmailError("Microsoft Graph rate limit hit.")
+
+    if response.status_code >= 500:
+        raise RetryableEmailError(f"Microsoft server error: {response.status_code}")
 
     if response.status_code >= 400:
         logger.error(
@@ -49,4 +73,6 @@ def send_email_via_graph_api(
             response.text,
         )
 
-        raise EmailSendError(f"Graph API send failed: {response.status_code}")
+        raise PermanentEmailError(
+            f"Permanent Graph API send failed: {response.status_code}"
+        )

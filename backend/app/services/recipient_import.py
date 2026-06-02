@@ -1,12 +1,14 @@
+from __future__ import annotations
+
 import csv
 import logging
 from pathlib import Path
 
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.models.campaign_recipient import CampaignRecipient
-from app.services.email_validation import validate_email_address
-
+from app.workers.validate_recipients import validate_recipients_task
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +19,7 @@ class ImportSummary:
     def __init__(self) -> None:
         self.total_rows = 0
         self.imported = 0
-        self.invalid = 0
+        self.invalid = 0  # malformed rows (missing/empty email), not DNS failures
 
 
 def import_recipients_from_csv(
@@ -26,64 +28,68 @@ def import_recipients_from_csv(
     file_path: Path,
 ) -> ImportSummary:
     summary = ImportSummary()
-
-    pending_objects: list[CampaignRecipient] = []
+    pending_rows: list[dict] = []
 
     with file_path.open("r", newline="", encoding="utf-8") as file:
         reader = csv.DictReader(file)
 
         required_columns = {"email"}
-
         if not required_columns.issubset(reader.fieldnames or set()):
             raise ValueError("CSV must contain at least an 'email' column")
 
         for row in reader:
             summary.total_rows += 1
-            email = (row.get("email") or "").strip()
+            email = (row.get("email") or "").strip().lower()
 
             if not email:
-                logger.warning("Skipping row with empty email")
+                logger.warning("Skipping row %s — empty email", summary.total_rows)
                 summary.invalid += 1
                 continue
 
-            validation_result = validate_email_address(email)
-
-            recipient = CampaignRecipient(
-                campaign_id=campaign_id,
-                first_name=(row.get("first_name") or "").strip() or None,
-                last_name=(row.get("last_name") or "").strip() or None,
-                email=email,
-                dns_valid=validation_result.is_vliad,
-                status=("pending" if validation_result.is_vliad else "invalif"),
-                failure_reason=validation_result.reason,
+            pending_rows.append(
+                {
+                    "campaign_id": campaign_id,
+                    "email": email,
+                    "first_name": (row.get("first_name") or "").strip() or None,
+                    "last_name": (row.get("last_name") or "").strip() or None,
+                    # DNS validation happens asynchronously (Phase 4.2)
+                    "dns_valid": None,
+                    "status": "pending_validation",
+                    "failure_reason": None,
+                }
             )
+            summary.imported += 1
 
-            pending_objects.append(recipient)
+            if len(pending_rows) >= COMMIT_BATCH_SIZE:
+                _insert_batch(db=db, rows=pending_rows)
+                pending_rows.clear()
 
-            if validation_result.is_vliad:
-                summary.imported += 1
-            else:
-                summary.invalid += 1
+        if pending_rows:
+            _insert_batch(db=db, rows=pending_rows)
 
-            if len(pending_objects) >= COMMIT_BATCH_SIZE:
-                _commit_batch(db=db, objects=pending_objects)
-                pending_objects.clear()
-            if pending_objects:
-                _commit_batch(db=db, objects=pending_objects)
+    logger.info(
+        "Recipient import completed. total=%s queued=%s skipped=%s",
+        summary.total_rows,
+        summary.imported,
+        summary.invalid,
+    )
 
-            logger.info(
-                "Recipient import completed. total=%s imported=%s invalid=%s",
-                summary.total_rows,
-                summary.imported,
-                summary.invalid,
-            )
+    validate_recipients_task.delay(campaign_id)
 
-            return summary
+    return summary
 
 
-def _commit_batch(db: Session, objects: list[CampaignRecipient]) -> None:
+def _insert_batch(db: Session, rows: list[dict]) -> None:
+
     try:
-        db.add_all(objects)
+        stmt = (
+            insert(CampaignRecipient)
+            .values(rows)
+            .on_conflict_do_nothing(
+                index_elements=["campaign_id", "email"],
+            )
+        )
+        db.execute(stmt)
         db.commit()
     except Exception:
         db.rollback()
