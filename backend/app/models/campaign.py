@@ -16,7 +16,11 @@ class Campaign(BaseModel):
     subject: Mapped[str] = mapped_column(String(500), nullable=False)
 
     template_body: Mapped[str] = mapped_column(Text, nullable=False)
-
+    template_id: Mapped[str | None] = mapped_column(
+        ForeignKey("templates.id"), nullable=True
+    )
+    # Sender address. None means send from the authenticated user's own mailbox.
+    from_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(
         String(50),
         default="draft",  # draft /scheduled /running /paused /completed /failed
@@ -29,3 +33,5 @@ class Campaign(BaseModel):
     )
 
     user = relationship("User")
+    source_template = relationship("Template")
+    cc_recipients = relationship("CampaignCcRecipient", cascade="all, delete-orphan")
