@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     # max CSV upload size in bytes (default 10 MB)
     MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024
 
+    # Cloudflare R2 — template HTML storage
+    # Endpoint format: https://<account_id>.r2.cloudflarestorage.com
+    R2_ENDPOINT_URL: str = ""
+    R2_ACCESS_KEY_ID: str = ""
+    R2_SECRET_ACCESS_KEY: str = ""
+    R2_BUCKET_NAME: str = "mailer-templates"
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
     @field_validator("ALLOWED_ORIGINS_RAW")
