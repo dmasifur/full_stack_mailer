@@ -53,14 +53,14 @@ async def microsoft_callback(
 
     try:
         _state_serializer().loads(state, salt=_STATE_SALT, max_age=_STATE_MAX_AGE)
-    except SignatureExpired:
+    except SignatureExpired as exc:
         raise HTTPException(
             status_code=400, detail="OAuth state expired. Please log in again."
-        ) from SignatureExpired
-    except BadSignature:
+        ) from exc
+    except BadSignature as exc:
         raise HTTPException(
             status_code=400, detail="Invalid OAuth state. Possible CSRF attempt."
-        ) from BadSignature
+        ) from exc
 
     if not code:
         raise HTTPException(

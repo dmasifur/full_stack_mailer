@@ -4,7 +4,7 @@ import csv
 import logging
 from pathlib import Path
 
-from sqlalchemy import insert
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.models.campaign_recipient import CampaignRecipient

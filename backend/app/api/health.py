@@ -28,7 +28,9 @@ def _check_database() -> dict:
 
 def _check_redis() -> dict:
     try:
-        client = redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=2)
+        client = redis.Redis.from_url(
+            settings.REDIS_URL, ssl_cert_reqs=None, socket_connect_timeout=2
+        )
         client.ping()
         return {"status": "ok"}
     except Exception as exc:

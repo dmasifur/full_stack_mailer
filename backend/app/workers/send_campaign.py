@@ -50,10 +50,11 @@ def send_campaign_task(
             logger.error("User not found for campaign.")
             return
 
-        transition(campaign, "running")
-        db.commit()
+        if campaign.status != "running":
+            transition(campaign, "running")
+            db.commit()
 
-        logger.info("Campaign started: %s", campaign_id)
+            logger.info("Campaign started: %s", campaign_id)
 
         while True:
             db.expire_all()

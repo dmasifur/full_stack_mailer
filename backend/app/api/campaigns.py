@@ -211,7 +211,7 @@ def start_campaign(
     campaign = _get_campaign_or_404(campaign_id, db, current_user)
 
     try:
-        transition(campaign, "scheduled")
+        transition(campaign, "running")
     except CampaignTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
