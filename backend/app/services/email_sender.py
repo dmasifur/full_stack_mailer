@@ -35,8 +35,23 @@ class EmailAuthError(EmailSendError):
 
 
 def send_email_via_graph_api(
-    *, user: User, recipient_email: str, subject: str, html_body: str
+    *,
+    user: User,
+    recipient_email: str,
+    subject: str,
+    html_body: str,
+    from_address: str | None = None,
+    cc_emails: list[str] | None = None,
 ) -> None:
+    """
+    Send an email via the Microsoft Graph API.
+
+    from_address: if provided, sends from this address (requires Mail.Send.Shared
+    permission in Azure for shared mailboxes). If None, sends from the
+    authenticated user's own mailbox.
+
+    cc_emails: optional list of CC recipient addresses.
+    """
     plaintext_token = decrypt_token(user.access_token)
 
     headers = {
@@ -44,12 +59,25 @@ def send_email_via_graph_api(
         "Content-Type": "application/json",
     }
 
+    message: dict = {
+        "subject": subject,
+        "body": {"ContentType": "HTML", "content": html_body},
+        "toRecipients": [{"emailAddress": {"address": recipient_email}}],
+    }
+
+    # Explicit from address — required for shared mailboxes.
+    # Omitting it sends from the authenticated user's own address.
+    if from_address:
+        message["from"] = {"emailAddress": {"address": from_address}}
+
+    # CC recipients — only include the key if there are addresses to send to.
+    if cc_emails:
+        message["ccRecipients"] = [
+            {"emailAddress": {"address": addr}} for addr in cc_emails
+        ]
+
     payload = {
-        "message": {
-            "subject": subject,
-            "body": {"ContentType": "HTML", "content": html_body},
-            "toRecipients": [{"emailAddress": {"address": recipient_email}}],
-        },
+        "message": message,
         "saveToSentItems": True,
     }
 
@@ -72,7 +100,6 @@ def send_email_via_graph_api(
             response.status_code,
             response.text,
         )
-
         raise PermanentEmailError(
             f"Permanent Graph API send failed: {response.status_code}"
         )

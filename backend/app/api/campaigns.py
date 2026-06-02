@@ -10,16 +10,21 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, get_db
 from app.models.campaign import Campaign
+from app.models.campaign_cc_recipient import CampaignCcRecipient
+from app.models.template import Template
 from app.models.user import User
 from app.schemas.campaign import (
     CampaignCreate,
     CampaignListResponse,
     CampaignResponse,
     CampaignUpdate,
+    CcRecipientAdd,
+    CcRecipientResponse,
     RecipientUploadResponse,
 )
 from app.services.campaign_state import CampaignTransitionError, transition
 from app.services.recipient_import import import_recipients_from_csv
+from app.services.template_storage import TemplateStorageError, fetch_template
 from app.workers.send_campaign import send_campaign_task
 
 logger = logging.getLogger(__name__)
@@ -40,11 +45,50 @@ def _get_campaign_or_404(
         .filter(Campaign.id == campaign_id, Campaign.user_id == current_user.id)
         .first()
     )
-
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found.")
-
     return campaign
+
+
+def _resolve_template_body(
+    *,
+    db: Session,
+    template_id: str | None,
+    template_body: str,
+) -> str:
+    """
+    If a template_id is provided, fetch the HTML from R2 and return it.
+    The caller-supplied template_body is used as fallback (plain text path).
+    """
+    if not template_id:
+        return template_body
+
+    template = db.get(Template, template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found.")
+
+    try:
+        return fetch_template(template.storage_key)
+    except TemplateStorageError as exc:
+        logger.exception("Failed to fetch template from storage. id=%s", template_id)
+        raise HTTPException(
+            status_code=500, detail="Failed to retrieve template content."
+        ) from exc
+
+
+def _sync_cc_recipients(
+    *,
+    db: Session,
+    campaign: Campaign,
+    cc_emails: list[str],
+) -> None:
+    """Replace the campaign's CC list with the provided addresses."""
+    db.query(CampaignCcRecipient).filter(
+        CampaignCcRecipient.campaign_id == str(campaign.id)
+    ).delete()
+
+    for email in cc_emails:
+        db.add(CampaignCcRecipient(campaign_id=str(campaign.id), email=email))
 
 
 @router.post("", status_code=201, response_model=CampaignResponse)
@@ -53,15 +97,31 @@ def create_campaign(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Campaign:
+    resolved_body = _resolve_template_body(
+        db=db,
+        template_id=str(body.template_id) if body.template_id else None,
+        template_body=body.template_body,
+    )
 
     campaign = Campaign(
         user_id=current_user.id,
         name=body.name,
         subject=body.subject,
-        template_body=body.template_body,
+        template_body=resolved_body,
+        template_id=str(body.template_id) if body.template_id else None,
+        from_address=str(body.from_address) if body.from_address else None,
         status="draft",
     )
     db.add(campaign)
+    db.flush()  # get campaign.id before CC insert
+
+    if body.cc_emails:
+        _sync_cc_recipients(
+            db=db,
+            campaign=campaign,
+            cc_emails=[str(e) for e in body.cc_emails],
+        )
+
     db.commit()
     db.refresh(campaign)
 
@@ -84,7 +144,6 @@ def list_campaigns(
         .limit(page_size)
         .all()
     )
-
     return CampaignListResponse(
         items=[CampaignResponse.model_validate(c) for c in items],
         total=total,
@@ -99,7 +158,6 @@ def get_campaign(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Campaign:
-    """Fetch a single campaign by ID."""
     return _get_campaign_or_404(campaign_id, db, current_user)
 
 
@@ -110,7 +168,6 @@ def update_campaign(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Campaign:
-    """Update a campaign — only allowed while it is in draft status."""
     campaign = _get_campaign_or_404(campaign_id, db, current_user)
 
     if campaign.status != "draft":
@@ -125,6 +182,14 @@ def update_campaign(
         campaign.subject = body.subject
     if body.template_body is not None:
         campaign.template_body = body.template_body
+    if body.from_address is not None:
+        campaign.from_address = str(body.from_address)
+    if body.cc_emails is not None:
+        _sync_cc_recipients(
+            db=db,
+            campaign=campaign,
+            cc_emails=[str(e) for e in body.cc_emails],
+        )
 
     db.commit()
     db.refresh(campaign)
@@ -149,8 +214,90 @@ def delete_campaign(
 
     db.delete(campaign)
     db.commit()
-
     logger.info("Campaign deleted. id=%s", campaign_id)
+
+
+
+@router.get("/{campaign_id}/cc-recipients", response_model=list[CcRecipientResponse])
+def list_cc_recipients(
+    campaign_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[CampaignCcRecipient]:
+    _get_campaign_or_404(campaign_id, db, current_user)
+    return (
+        db.query(CampaignCcRecipient)
+        .filter(CampaignCcRecipient.campaign_id == campaign_id)
+        .all()
+    )
+
+
+@router.post(
+    "/{campaign_id}/cc-recipients",
+    status_code=201,
+    response_model=list[CcRecipientResponse],
+)
+def add_cc_recipients(
+    campaign_id: str,
+    body: CcRecipientAdd,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[CampaignCcRecipient]:
+    """
+    Replace the campaign's CC list with the provided addresses.
+    Only allowed while the campaign is in draft status.
+    """
+    campaign = _get_campaign_or_404(campaign_id, db, current_user)
+
+    if campaign.status != "draft":
+        raise HTTPException(
+            status_code=409,
+            detail="CC recipients can only be updated on draft campaigns.",
+        )
+
+    _sync_cc_recipients(
+        db=db,
+        campaign=campaign,
+        cc_emails=[str(e) for e in body.emails],
+    )
+    db.commit()
+
+    return (
+        db.query(CampaignCcRecipient)
+        .filter(CampaignCcRecipient.campaign_id == campaign_id)
+        .all()
+    )
+
+
+@router.delete("/{campaign_id}/cc-recipients/{cc_id}", status_code=204)
+def remove_cc_recipient(
+    campaign_id: str,
+    cc_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    campaign = _get_campaign_or_404(campaign_id, db, current_user)
+
+    if campaign.status != "draft":
+        raise HTTPException(
+            status_code=409,
+            detail="CC recipients can only be updated on draft campaigns.",
+        )
+
+    cc = (
+        db.query(CampaignCcRecipient)
+        .filter(
+            CampaignCcRecipient.id == cc_id,
+            CampaignCcRecipient.campaign_id == campaign_id,
+        )
+        .first()
+    )
+    if not cc:
+        raise HTTPException(status_code=404, detail="CC recipient not found.")
+
+    db.delete(cc)
+    db.commit()
+
 
 
 @router.post(
@@ -196,8 +343,6 @@ def upload_recipients_csv(
         ) from exc
 
     finally:
-        # File deleted after import completes (or fails). If you need to
-        # inspect failures, move this unlink into the success branch only.
         if save_file_path.exists():
             save_file_path.unlink(missing_ok=True)
 
@@ -217,7 +362,6 @@ def start_campaign(
 
     db.commit()
     send_campaign_task.delay(str(campaign.id))
-
     return {"message": "Campaign queued successfully."}
 
 
