@@ -13,7 +13,7 @@ from app.models.user import User
 from app.services.campaign_state import transition
 from app.services.email_sender import (
     EmailAuthError,
-    EmailSendError,
+    PermanentEmailError,
     RetryableEmailError,
     send_email_via_graph_api,
 )
@@ -105,11 +105,16 @@ def send_campaign_task(campaign_id: str) -> None:
                     )
                     raise
 
-                except EmailSendError:
-                    logger.exception(
-                        "Permanent send failure. recipient=%s", recipient.email
+                # A permanent failure belongs to one recipient, not the campaign.
+                # The row is already marked "failed" with its reason by
+                # _send_single_recipient, so carry on with the rest of the batch.
+                except PermanentEmailError:
+                    logger.warning(
+                        "Permanent send failure — skipping recipient. recipient=%s",
+                        recipient.email,
+                        exc_info=True,
                     )
-                    raise
+                    continue
 
                 except Exception:
                     logger.exception(
@@ -123,13 +128,64 @@ def send_campaign_task(campaign_id: str) -> None:
             transition(campaign, "completed")
             db.commit()
 
+    # Retryable errors must NOT mark the campaign failed — Celery's autoretry
+    # will re-run this task and pick up where the batch left off.
+    except RetryableEmailError:
+        db.rollback()
+        logger.warning(
+            "Campaign send interrupted by a retryable error. campaign=%s",
+            campaign_id,
+            exc_info=True,
+        )
+        raise
+
     except Exception:
         db.rollback()
         logger.exception("Campaign send task failed. campaign=%s", campaign_id)
+        _mark_failed(db=db, campaign_id=campaign_id)
         raise
 
     finally:
         db.close()
+
+
+def _mark_failed(*, db: Session, campaign_id: str) -> None:
+    """
+    Move a campaign to 'failed' after an unrecoverable error.
+
+    Without this the row stays at 'running' forever: 'running' has no transition
+    back to 'draft' or 'scheduled', so the campaign would be unrecoverable via
+    the API. Never let a bookkeeping failure mask the original exception.
+    """
+    try:
+        campaign = db.get(Campaign, campaign_id)
+
+        if not campaign:
+            return
+
+        # Anything caught mid-flight is left at "sending", which no query picks
+        # up again — the pending filter looks for "pending". Release those rows
+        # so /retry can actually resend them.
+        released = (
+            db.query(CampaignRecipient)
+            .filter(
+                CampaignRecipient.campaign_id == campaign_id,
+                CampaignRecipient.status == "sending",
+            )
+            .update({CampaignRecipient.status: "pending"}, synchronize_session=False)
+        )
+
+        transition(campaign, "failed")
+        db.commit()
+        logger.info(
+            "Campaign marked failed. id=%s released_recipients=%s",
+            campaign_id,
+            released,
+        )
+
+    except Exception:
+        db.rollback()
+        logger.exception("Could not mark campaign as failed. campaign=%s", campaign_id)
 
 
 def _send_single_recipient(
@@ -203,13 +259,14 @@ def _send_single_recipient(
 
         logger.info("Email sent successfully: %s", recipient.email)
 
-    # Re-raise retryable errors BEFORE the EmailSendError catch so Celery's
-    # autoretry_for can intercept them. EmailSendError is the parent class of
-    # RetryableEmailError; catching the parent first would swallow the subtype.
-    except RetryableEmailError:
+    # Retryable and auth errors are campaign-level problems, not recipient-level
+    # ones — the address is fine, the transport or the token isn't. Re-raise them
+    # untouched so the caller can retry or pause without burning a retry_count or
+    # writing a misleading "failed" log against an address that was never tried.
+    except RetryableEmailError, EmailAuthError:
         raise
 
-    except EmailSendError as exc:
+    except PermanentEmailError as exc:
         db.rollback()
         db.refresh(recipient)
 

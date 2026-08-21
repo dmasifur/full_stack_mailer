@@ -10,6 +10,7 @@ celery_app = Celery(
     backend=settings.REDIS_URL,
     include=[
         "app.workers.send_campaign",
+        "app.workers.reconcile_campaigns",
         "app.workers.validate_recipients",
     ],
 )
@@ -28,5 +29,14 @@ celery_app.conf.update(
     },
     redis_backend_use_ssl={
         "ssl_cert_reqs": ssl.CERT_NONE,
+    },
+    # The Procfile runs a beat process; without a schedule it does nothing.
+    # The reconciler is what makes scheduling durable — an apply_async(eta=...)
+    # task lives only in the broker and is lost if Redis is flushed.
+    beat_schedule={
+        "reconcile-campaigns": {
+            "task": "reconcile_campaigns_task",
+            "schedule": 60.0,
+        },
     },
 )

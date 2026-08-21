@@ -34,4 +34,18 @@ class Campaign(BaseModel):
 
     user = relationship("User")
     source_template = relationship("Template")
-    cc_recipients = relationship("CampaignCcRecipient", cascade="all, delete-orphan")
+    cc_recipients = relationship(
+        "CampaignCcRecipient",
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+    )
+    recipients = relationship(
+        "CampaignRecipient",
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+    )
+    email_logs = relationship(
+        "EmailLog",
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+    )

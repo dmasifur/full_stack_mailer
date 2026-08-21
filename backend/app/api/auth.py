@@ -5,12 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 import httpx
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db
 from app.core.config import settings
+from app.core.rate_limit import limiter
 from app.models.user import User
 from app.services.auth.jwt import create_access_token
 from app.services.auth.microsoft_oauth import (
@@ -25,8 +24,6 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 _STATE_SALT = "oauth-state"
 _STATE_MAX_AGE = 300
-
-limiter = Limiter(key_func=get_remote_address)
 
 
 def _state_serializer() -> URLSafeTimedSerializer:

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_current_user, get_db
 from app.models.campaign import Campaign
 from app.models.campaign_cc_recipient import CampaignCcRecipient
+from app.models.sender_address import SenderAddress
 from app.models.template import Template
 from app.models.user import User
 from app.schemas.campaign import (
@@ -76,6 +77,43 @@ def _resolve_template_body(
         ) from exc
 
 
+def _validate_from_address(
+    *,
+    db: Session,
+    user: User,
+    from_address: str | None,
+) -> str | None:
+    """
+    Ensure a campaign's from_address is one the caller actually owns.
+
+    Without this check any authenticated user could send as any address — the
+    value goes straight to Graph. None means "send from the user's own mailbox",
+    which needs no verification.
+    """
+    if not from_address:
+        return None
+
+    owned = (
+        db.query(SenderAddress)
+        .filter(
+            SenderAddress.user_id == str(user.id),
+            SenderAddress.email == from_address,
+        )
+        .first()
+    )
+
+    if not owned:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{from_address}' is not one of your registered sender "
+                "addresses. Add it under /sender-addresses first."
+            ),
+        )
+
+    return from_address
+
+
 def _sync_cc_recipients(
     *,
     db: Session,
@@ -103,13 +141,19 @@ def create_campaign(
         template_body=body.template_body,
     )
 
+    from_address = _validate_from_address(
+        db=db,
+        user=current_user,
+        from_address=str(body.from_address) if body.from_address else None,
+    )
+
     campaign = Campaign(
         user_id=current_user.id,
         name=body.name,
         subject=body.subject,
         template_body=resolved_body,
         template_id=str(body.template_id) if body.template_id else None,
-        from_address=str(body.from_address) if body.from_address else None,
+        from_address=from_address,
         status="draft",
     )
     db.add(campaign)
@@ -183,7 +227,11 @@ def update_campaign(
     if body.template_body is not None:
         campaign.template_body = body.template_body
     if body.from_address is not None:
-        campaign.from_address = str(body.from_address)
+        campaign.from_address = _validate_from_address(
+            db=db,
+            user=current_user,
+            from_address=str(body.from_address),
+        )
     if body.cc_emails is not None:
         _sync_cc_recipients(
             db=db,
@@ -206,10 +254,16 @@ def delete_campaign(
 ) -> None:
     campaign = _get_campaign_or_404(campaign_id, db, current_user)
 
-    if campaign.status != "draft":
+    # An in-flight campaign has a worker or a queued ETA task pointing at it.
+    # Everything else — including completed and failed — is safe to remove; the
+    # recipients and send logs cascade with it.
+    if campaign.status in {"running", "scheduled"}:
         raise HTTPException(
             status_code=409,
-            detail="Only draft campaigns can be deleted.",
+            detail=(
+                f"A campaign that is '{campaign.status}' cannot be deleted. "
+                "Pause it first."
+            ),
         )
 
     db.delete(campaign)
@@ -424,3 +478,28 @@ def resume_campaign(
     send_campaign_task.delay(str(campaign.id))
     logger.info("Campaign resumed. id=%s", campaign_id)
     return {"message": "Campaign resumed successfully."}
+
+
+@router.post("/{campaign_id}/retry", response_model=dict)
+def retry_campaign(
+    campaign_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Re-queue a campaign that ended in 'failed'.
+
+    Recipients already marked 'sent' are skipped by the worker's idempotency
+    check, so this picks up the remaining ones rather than resending.
+    """
+    campaign = _get_campaign_or_404(campaign_id, db, current_user)
+
+    try:
+        transition(campaign, "running")
+    except CampaignTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    db.commit()
+    send_campaign_task.delay(str(campaign.id))
+    logger.info("Campaign retried. id=%s", campaign_id)
+    return {"message": "Campaign re-queued successfully."}

@@ -8,9 +8,9 @@ class CampaignCcRecipient(BaseModel):
     __tablename__ = "campaign_cc_recipients"
 
     campaign_id: Mapped[str] = mapped_column(
-        ForeignKey("campaigns.id"), nullable=False, index=True
+        ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, index=True
     )
 
     email: Mapped[str] = mapped_column(String(255), nullable=False)
 
-    campaign = relationship("Campaign")
+    campaign = relationship("Campaign", back_populates="cc_recipients")

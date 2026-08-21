@@ -16,7 +16,7 @@ class CampaignRecipient(BaseModel):
     )
 
     campaign_id: Mapped[str] = mapped_column(
-        ForeignKey("campaigns.id"),
+        ForeignKey("campaigns.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -64,4 +64,4 @@ class CampaignRecipient(BaseModel):
         nullable=True,
     )
 
-    campaign = relationship("Campaign")
+    campaign = relationship("Campaign", back_populates="recipients")

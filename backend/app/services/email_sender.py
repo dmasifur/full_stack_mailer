@@ -1,4 +1,5 @@
 import logging
+from urllib.parse import quote
 
 import requests
 
@@ -7,7 +8,24 @@ from app.services.token_encryption import decrypt_token
 
 logger = logging.getLogger(__name__)
 
-GRAPH_SENDMAIL_URL = "https://graph.microsoft.com/v1.0/me/sendMail"
+GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
+GRAPH_SENDMAIL_URL = f"{GRAPH_BASE_URL}/me/sendMail"
+
+
+def _sendmail_url(from_address: str | None) -> str:
+    """
+    Pick the Graph endpoint for the mailbox being sent from.
+
+    /me/sendMail always sends as the authenticated user — Graph ignores a "from"
+    field there unless the account holds SendAs rights, which silently defeats
+    shared-mailbox sending. Addressing the mailbox directly via
+    /users/{address}/sendMail is the supported route, and is what the
+    Mail.Send.Shared scope grants.
+    """
+    if not from_address:
+        return GRAPH_SENDMAIL_URL
+
+    return f"{GRAPH_BASE_URL}/users/{quote(from_address)}/sendMail"
 
 
 class EmailSendError(Exception):
@@ -65,8 +83,8 @@ def send_email_via_graph_api(
         "toRecipients": [{"emailAddress": {"address": recipient_email}}],
     }
 
-    # Explicit from address — required for shared mailboxes.
-    # Omitting it sends from the authenticated user's own address.
+    # The endpoint (below) is what actually selects the mailbox; "from" makes the
+    # intent explicit and is required by Graph when sending on behalf of another.
     if from_address:
         message["from"] = {"emailAddress": {"address": from_address}}
 
@@ -82,7 +100,7 @@ def send_email_via_graph_api(
     }
 
     response = requests.post(
-        GRAPH_SENDMAIL_URL, headers=headers, json=payload, timeout=30
+        _sendmail_url(from_address), headers=headers, json=payload, timeout=30
     )
 
     if response.status_code == 401:
