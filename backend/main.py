@@ -1,19 +1,19 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
 
 from app.api.auth import router as auth_router
 from app.api.campaigns import router as campaigns_router
 from app.api.health import router as health_router
+from app.api.sender_addresses import router as sender_addresses_router
+from app.api.templates import router as templates_router
 from app.core.config import settings
 from app.core.logging import setup_logging
+from app.core.rate_limit import limiter
 
 setup_logging()
-
-limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 
 app = FastAPI(title=settings.APP_NAME)
 
@@ -31,5 +31,7 @@ app.add_middleware(
 )
 
 app.include_router(health_router)
-app.include_router(campaigns_router)
 app.include_router(auth_router)
+app.include_router(campaigns_router)
+app.include_router(templates_router)
+app.include_router(sender_addresses_router)

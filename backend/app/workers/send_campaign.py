@@ -6,13 +6,14 @@ from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.models.campaign import Campaign
+from app.models.campaign_cc_recipient import CampaignCcRecipient
 from app.models.campaign_recipient import CampaignRecipient
 from app.models.email_log import EmailLog
 from app.models.user import User
 from app.services.campaign_state import transition
 from app.services.email_sender import (
     EmailAuthError,
-    EmailSendError,
+    PermanentEmailError,
     RetryableEmailError,
     send_email_via_graph_api,
 )
@@ -22,7 +23,6 @@ from app.workers.celery import celery_app
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 10
-
 EMAIL_DELAY_SECONDS = 5
 
 
@@ -31,9 +31,7 @@ EMAIL_DELAY_SECONDS = 5
     retry_backoff=True,
     retry_kwargs={"max_retries": 3},
 )
-def send_campaign_task(
-    campaign_id: str,
-) -> None:
+def send_campaign_task(campaign_id: str) -> None:
 
     db: Session = SessionLocal()
 
@@ -54,7 +52,10 @@ def send_campaign_task(
             transition(campaign, "running")
             db.commit()
 
-            logger.info("Campaign started: %s", campaign_id)
+        logger.info("Campaign started: %s", campaign_id)
+
+        # Fetch CC list once — it's the same for every recipient in the campaign.
+        cc_emails = _get_cc_emails(db=db, campaign_id=campaign_id)
 
         while True:
             db.expire_all()
@@ -84,14 +85,16 @@ def send_campaign_task(
             for recipient in recipients:
                 try:
                     _send_single_recipient(
-                        db=db, campaign=campaign, user=user, recipient=recipient
+                        db=db,
+                        campaign=campaign,
+                        user=user,
+                        recipient=recipient,
+                        cc_emails=cc_emails,
                     )
-
                     time.sleep(EMAIL_DELAY_SECONDS)
 
                 except EmailAuthError:
                     logger.exception("Auth failure. Campaign paused.")
-
                     transition(campaign, "paused")
                     db.commit()
                     return
@@ -102,11 +105,16 @@ def send_campaign_task(
                     )
                     raise
 
-                except EmailSendError:
-                    logger.exception(
-                        "Permanent send failure. recipient=%s", recipient.email
+                # A permanent failure belongs to one recipient, not the campaign.
+                # The row is already marked "failed" with its reason by
+                # _send_single_recipient, so carry on with the rest of the batch.
+                except PermanentEmailError:
+                    logger.warning(
+                        "Permanent send failure — skipping recipient. recipient=%s",
+                        recipient.email,
+                        exc_info=True,
                     )
-                    raise
+                    continue
 
                 except Exception:
                     logger.exception(
@@ -120,15 +128,64 @@ def send_campaign_task(
             transition(campaign, "completed")
             db.commit()
 
+    # Retryable errors must NOT mark the campaign failed — Celery's autoretry
+    # will re-run this task and pick up where the batch left off.
+    except RetryableEmailError:
+        db.rollback()
+        logger.warning(
+            "Campaign send interrupted by a retryable error. campaign=%s",
+            campaign_id,
+            exc_info=True,
+        )
+        raise
+
     except Exception:
         db.rollback()
-
         logger.exception("Campaign send task failed. campaign=%s", campaign_id)
-
+        _mark_failed(db=db, campaign_id=campaign_id)
         raise
 
     finally:
         db.close()
+
+
+def _mark_failed(*, db: Session, campaign_id: str) -> None:
+    """
+    Move a campaign to 'failed' after an unrecoverable error.
+
+    Without this the row stays at 'running' forever: 'running' has no transition
+    back to 'draft' or 'scheduled', so the campaign would be unrecoverable via
+    the API. Never let a bookkeeping failure mask the original exception.
+    """
+    try:
+        campaign = db.get(Campaign, campaign_id)
+
+        if not campaign:
+            return
+
+        # Anything caught mid-flight is left at "sending", which no query picks
+        # up again — the pending filter looks for "pending". Release those rows
+        # so /retry can actually resend them.
+        released = (
+            db.query(CampaignRecipient)
+            .filter(
+                CampaignRecipient.campaign_id == campaign_id,
+                CampaignRecipient.status == "sending",
+            )
+            .update({CampaignRecipient.status: "pending"}, synchronize_session=False)
+        )
+
+        transition(campaign, "failed")
+        db.commit()
+        logger.info(
+            "Campaign marked failed. id=%s released_recipients=%s",
+            campaign_id,
+            released,
+        )
+
+    except Exception:
+        db.rollback()
+        logger.exception("Could not mark campaign as failed. campaign=%s", campaign_id)
 
 
 def _send_single_recipient(
@@ -137,6 +194,7 @@ def _send_single_recipient(
     campaign: Campaign,
     user: User,
     recipient: CampaignRecipient,
+    cc_emails: list[str],
 ) -> None:
     existing_log = (
         db.query(EmailLog)
@@ -149,14 +207,9 @@ def _send_single_recipient(
     )
 
     if existing_log:
-        logger.info(
-            "Skipping already sent recipient: %s",
-            recipient.email,
-        )
-
+        logger.info("Skipping already sent recipient: %s", recipient.email)
         recipient.status = "sent"
         db.commit()
-
         return
 
     recipient.status = "sending"
@@ -169,24 +222,20 @@ def _send_single_recipient(
                 recipient_email=recipient.email,
                 subject=campaign.subject,
                 html_body=campaign.template_body,
+                from_address=campaign.from_address,
+                cc_emails=cc_emails or None,
             )
 
         except EmailAuthError:
             logger.warning("Access token expired. Attempting refresh.")
 
             try:
-                refresh_access_token(
-                    db=db,
-                    user=user,
-                )
-
+                refresh_access_token(db=db, user=user)
             except TokenRefreshError as exc:
                 logger.exception("Token refresh failed.")
-
                 raise EmailAuthError("Unable to refresh token.") from exc
 
             db.refresh(user)
-
             logger.info("Token refreshed successfully. Retrying email send.")
 
             send_email_via_graph_api(
@@ -194,6 +243,8 @@ def _send_single_recipient(
                 recipient_email=recipient.email,
                 subject=campaign.subject,
                 html_body=campaign.template_body,
+                from_address=campaign.from_address,
+                cc_emails=cc_emails or None,
             )
 
         recipient.status = "sent"
@@ -203,25 +254,20 @@ def _send_single_recipient(
             recipient_email=recipient.email,
             status="sent",
         )
-
         db.add(email_log)
         db.commit()
 
-        logger.info(
-            "Email sent successfully: %s",
-            recipient.email,
-        )
+        logger.info("Email sent successfully: %s", recipient.email)
 
-    # Re-raise retryable errors BEFORE the EmailSendError catch so Celery's
-    # autoretry_for can intercept them. EmailSendError is the parent class of
-    # RetryableEmailError; catching the parent first would swallow the subtype
-    # and mark the recipient as permanently failed.
-    except RetryableEmailError:
+    # Retryable and auth errors are campaign-level problems, not recipient-level
+    # ones — the address is fine, the transport or the token isn't. Re-raise them
+    # untouched so the caller can retry or pause without burning a retry_count or
+    # writing a misleading "failed" log against an address that was never tried.
+    except RetryableEmailError, EmailAuthError:
         raise
 
-    except EmailSendError as exc:
+    except PermanentEmailError as exc:
         db.rollback()
-
         db.refresh(recipient)
 
         recipient.status = "failed"
@@ -234,16 +280,20 @@ def _send_single_recipient(
             status="failed",
             error_message=str(exc),
         )
-
         db.add(email_log)
         db.commit()
 
-        logger.exception(
-            "Email send failed: %s",
-            recipient.email,
-        )
-
+        logger.exception("Email send failed: %s", recipient.email)
         raise
+
+
+def _get_cc_emails(*, db: Session, campaign_id: str) -> list[str]:
+    rows = (
+        db.query(CampaignCcRecipient)
+        .filter(CampaignCcRecipient.campaign_id == campaign_id)
+        .all()
+    )
+    return [row.email for row in rows]
 
 
 def _get_pending_recipients(
@@ -251,7 +301,6 @@ def _get_pending_recipients(
     db: Session,
     campaign_id: str,
 ) -> list[CampaignRecipient]:
-
     query_statement = (
         select(CampaignRecipient)
         .where(
@@ -262,7 +311,4 @@ def _get_pending_recipients(
         .limit(BATCH_SIZE)
         .with_for_update(skip_locked=True)
     )
-
-    recipients = db.execute(query_statement).scalars().all()
-
-    return recipients
+    return db.execute(query_statement).scalars().all()

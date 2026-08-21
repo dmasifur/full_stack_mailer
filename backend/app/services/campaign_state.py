@@ -15,12 +15,13 @@ VALID_CAMPAIGN_STATUSES = {
 }
 
 VALID_TRANSITIONS: dict[str, set[str]] = {
-    "draft": {"scheduled"},
+    # draft → running is a manual start; draft → scheduled defers it.
+    "draft": {"scheduled", "running"},
     "scheduled": {"running", "draft"},  # allow un-scheduling back to draft
     "running": {"paused", "completed", "failed"},
     "paused": {"running", "scheduled", "failed"},  # resume → scheduled (re-queues)
     "completed": set(),
-    "failed": set(),
+    "failed": {"running"},  # retry re-queues the remaining recipients
 }
 
 

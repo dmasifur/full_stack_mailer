@@ -1,5 +1,5 @@
 from sqlalchemy import ForeignKey, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import BaseModel
 
@@ -7,9 +7,12 @@ from app.models.base import BaseModel
 class EmailLog(BaseModel):
     __tablename__ = "email_logs"
 
+    # Indexed: the send worker looks up (campaign_id, recipient_email, status)
+    # for its idempotency check before every single send.
     campaign_id: Mapped[str] = mapped_column(
-        ForeignKey("campaigns.id"),
+        ForeignKey("campaigns.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
     )
 
     recipient_email: Mapped[str] = mapped_column(
@@ -32,3 +35,5 @@ class EmailLog(BaseModel):
         Text,
         nullable=True,
     )
+
+    campaign = relationship("Campaign", back_populates="email_logs")
