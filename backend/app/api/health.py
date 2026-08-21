@@ -15,18 +15,40 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["health"])
 
 
+def _failure(component: str, exc: Exception) -> dict:
+    """
+    Report a failed check without describing the infrastructure.
+
+    /health is unauthenticated, and driver errors name the host, port, database
+    and user — psycopg2 and redis-py both do. The operator gets the detail from
+    the logs; outside development the caller only learns that something is down.
+    """
+    logger.error("%s health check failed: %s", component, exc)
+
+    if settings.APP_ENV == "development":
+        return {"status": "error", "detail": str(exc)}
+
+    return {"status": "error"}
+
+
 def _check_database() -> dict:
+    db = None
     try:
         db = SessionLocal()
         db.execute(text("SELECT 1"))
-        db.close()
         return {"status": "ok"}
     except Exception as exc:
-        logger.error("Database health check failed: %s", exc)
-        return {"status": "error", "detail": str(exc)}
+        return _failure("Database", exc)
+    finally:
+        # Must be in `finally`: a failing SELECT would otherwise skip the close
+        # and leak the session, and health checks are polled continuously —
+        # exactly when the database is flaky, which exhausts the pool.
+        if db is not None:
+            db.close()
 
 
 def _check_redis() -> dict:
+    client = None
     try:
         client = redis.Redis.from_url(
             settings.REDIS_URL, ssl_cert_reqs=None, socket_connect_timeout=2
@@ -34,8 +56,12 @@ def _check_redis() -> dict:
         client.ping()
         return {"status": "ok"}
     except Exception as exc:
-        logger.error("Redis health check failed: %s", exc)
-        return {"status": "error", "detail": str(exc)}
+        return _failure("Redis", exc)
+    finally:
+        # from_url builds a fresh connection pool per call; without this every
+        # health check leaks one.
+        if client is not None:
+            client.close()
 
 
 @router.get("/health")

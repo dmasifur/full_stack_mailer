@@ -41,11 +41,9 @@ def refresh_access_token(*, db: Session, user: User) -> None:
     )
 
     if response.status_code != 200:
-        logger.error(
-            "Token refresh failed. status=%s response=%s",
-            response.status_code,
-            response.text,
-        )
+        # Body withheld: the refresh request carries the client secret and the
+        # refresh token, and an error response can echo them back.
+        logger.error("Token refresh failed. status=%s", response.status_code)
         raise TokenRefreshError("Microsoft token refresh failed.")
 
     token_data = response.json()

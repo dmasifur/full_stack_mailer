@@ -78,7 +78,12 @@ async def microsoft_callback(
         )
 
         if token_response.status_code != 200:
-            logger.error("Failed to obtain Microsoft token: %s", token_response.text)
+            # Body withheld: an OAuth error response echoes back submitted
+            # parameters, which can include the authorization code.
+            logger.error(
+                "Failed to obtain Microsoft token. status=%s",
+                token_response.status_code,
+            )
             raise HTTPException(
                 status_code=400, detail="Microsoft token exchange failed."
             )
@@ -93,7 +98,11 @@ async def microsoft_callback(
         )
 
         if profile_response.status_code != 200:
-            logger.error("Failed to fetch Microsoft profile: %s", profile_response.text)
+            # Body withheld: the Graph /me payload is personal data.
+            logger.error(
+                "Failed to fetch Microsoft profile. status=%s",
+                profile_response.status_code,
+            )
             raise HTTPException(
                 status_code=400, detail="Failed to fetch Microsoft profile."
             )

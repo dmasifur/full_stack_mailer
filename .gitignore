@@ -29,3 +29,6 @@ dist/
 node_modules/
 dist/
 coverage/
+# Celery runtime state
+celerybeat-schedule
+celerybeat.pid
