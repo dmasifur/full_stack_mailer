@@ -1,16 +1,17 @@
 import logging
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 import httpx
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_db
+from app.api.dependencies import get_current_user, get_db
 from app.core.config import settings
 from app.core.rate_limit import limiter
 from app.models.user import User
+from app.schemas.user import UserResponse
 from app.services.auth.jwt import create_access_token
 from app.services.auth.microsoft_oauth import (
     MICROSOFT_TOKEN_URL,
@@ -24,6 +25,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 _STATE_SALT = "oauth-state"
 _STATE_MAX_AGE = 300
+_STATE_COOKIE = "oauth_state"
 
 
 def _state_serializer() -> URLSafeTimedSerializer:
@@ -35,21 +37,48 @@ def _state_serializer() -> URLSafeTimedSerializer:
 def microsoft_login(request: Request) -> RedirectResponse:
     raw_state = secrets.token_urlsafe(32)
     signed_state = _state_serializer().dumps(raw_state, salt=_STATE_SALT)
-    authorization_url = build_authorization_url(state=signed_state)
-    return RedirectResponse(authorization_url)
+
+    response = RedirectResponse(build_authorization_url(state=signed_state))
+
+    # The signature proves this server minted the state, not that it minted it
+    # for this browser. The cookie binds the two. See docs/architecture.md.
+    response.set_cookie(
+        key=_STATE_COOKIE,
+        value=raw_state,
+        httponly=True,
+        secure=not settings.is_development,
+        samesite="lax",
+        max_age=_STATE_MAX_AGE,
+        path="/auth",
+    )
+
+    return response
 
 
-@router.get("/microsoft/callback")
+def _clear_state_cookie(response: Response) -> None:
+    response.delete_cookie(
+        _STATE_COOKIE,
+        path="/auth",
+        httponly=True,
+        secure=not settings.is_development,
+        samesite="lax",
+    )
+
+
+@router.get("/microsoft/callback", response_model=None)
 async def microsoft_callback(
+    request: Request,
     code: str | None = Query(default=None),
     state: str | None = Query(default=None),
     db: Session = Depends(get_db),
-) -> JSONResponse:
+) -> Response:
     if not state:
         raise HTTPException(status_code=400, detail="Missing OAuth state parameter.")
 
     try:
-        _state_serializer().loads(state, salt=_STATE_SALT, max_age=_STATE_MAX_AGE)
+        raw_state = _state_serializer().loads(
+            state, salt=_STATE_SALT, max_age=_STATE_MAX_AGE
+        )
     except SignatureExpired as exc:
         raise HTTPException(
             status_code=400, detail="OAuth state expired. Please log in again."
@@ -58,6 +87,23 @@ async def microsoft_callback(
         raise HTTPException(
             status_code=400, detail="Invalid OAuth state. Possible CSRF attempt."
         ) from exc
+
+    expected_state = request.cookies.get(_STATE_COOKIE)
+
+    if not expected_state:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing OAuth state cookie. Start login from '/auth/microsoft/login'.",
+        )
+
+    # compare_digest: the value is attacker-supplied.
+    if not secrets.compare_digest(str(raw_state), expected_state):
+        logger.warning(
+            "OAuth state did not match the state cookie; rejecting callback."
+        )
+        raise HTTPException(
+            status_code=400, detail="Invalid OAuth state. Possible CSRF attempt."
+        )
 
     if not code:
         raise HTTPException(
@@ -78,8 +124,8 @@ async def microsoft_callback(
         )
 
         if token_response.status_code != 200:
-            # Body withheld: an OAuth error response echoes back submitted
-            # parameters, which can include the authorization code.
+            # Body withheld: an OAuth error echoes submitted parameters,
+            # including the authorization code.
             logger.error(
                 "Failed to obtain Microsoft token. status=%s",
                 token_response.status_code,
@@ -146,28 +192,47 @@ async def microsoft_callback(
 
     session_token = create_access_token(str(user.id))
 
-    response = JSONResponse(
-        content={
-            "message": "Microsoft login successful.",
-            "user_id": str(user.id),
-            "email": user.email,
-        }
-    )
+    response: Response
+    if settings.FRONTEND_URL:
+        response = RedirectResponse(settings.FRONTEND_URL, status_code=303)
+    else:
+        response = JSONResponse(
+            content={
+                "message": "Microsoft login successful.",
+                "user_id": str(user.id),
+                "email": user.email,
+            }
+        )
 
     response.set_cookie(
         key="access_token",
         value=session_token,
         httponly=True,
-        secure=settings.APP_ENV != "development",
+        secure=not settings.is_development,
         samesite="lax",
-        max_age=60 * 60 * 8,
+        # Derived from the token's TTL so the two cannot expire at different
+        # times.
+        max_age=settings.ACCESS_TOKEN_TTL_SECONDS,
     )
+    _clear_state_cookie(response)
 
     return response
+
+
+@router.get("/me", response_model=UserResponse)
+def read_current_user(current_user: User = Depends(get_current_user)) -> User:
+    """Identify the authenticated caller."""
+    return current_user
 
 
 @router.post("/logout")
 def logout() -> JSONResponse:
     response = JSONResponse(content={"message": "Logged out successfully."})
-    response.delete_cookie("access_token")
+    # Attributes must match those it was set with, or the browser keeps it.
+    response.delete_cookie(
+        "access_token",
+        httponly=True,
+        secure=not settings.is_development,
+        samesite="lax",
+    )
     return response
