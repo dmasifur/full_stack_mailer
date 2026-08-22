@@ -8,6 +8,8 @@ venv/
 
 # Environment variables
 .env
+.env.*
+!.env.example
 
 # Logs
 logs/
@@ -32,3 +34,15 @@ coverage/
 # Celery runtime state
 celerybeat-schedule
 celerybeat.pid
+
+# pytest
+.pytest_cache/
+
+# Ruff
+.ruff_cache/
+
+# Agent-local settings
+.claude/settings.local.json
+
+# Transient CSV upload staging (see app/api/campaigns.py)
+uploads/
