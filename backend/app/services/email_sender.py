@@ -70,6 +70,11 @@ def send_email_via_graph_api(
 
     cc_emails: optional list of CC recipient addresses.
     """
+    # Raised as an auth error, not a crypto one: the worker pauses the campaign
+    # for re-authentication instead of failing it outright.
+    if not user.access_token:
+        raise EmailAuthError("User has no stored Microsoft access token.")
+
     plaintext_token = decrypt_token(user.access_token)
 
     headers = {
@@ -77,18 +82,17 @@ def send_email_via_graph_api(
         "Content-Type": "application/json",
     }
 
-    message: dict = {
+    message: dict[str, object] = {
         "subject": subject,
         "body": {"ContentType": "HTML", "content": html_body},
         "toRecipients": [{"emailAddress": {"address": recipient_email}}],
     }
 
-    # The endpoint (below) is what actually selects the mailbox; "from" makes the
-    # intent explicit and is required by Graph when sending on behalf of another.
+    # The endpoint selects the mailbox; "from" is required by Graph when
+    # sending on behalf of another.
     if from_address:
         message["from"] = {"emailAddress": {"address": from_address}}
 
-    # CC recipients — only include the key if there are addresses to send to.
     if cc_emails:
         message["ccRecipients"] = [
             {"emailAddress": {"address": addr}} for addr in cc_emails
@@ -113,11 +117,21 @@ def send_email_via_graph_api(
         raise RetryableEmailError(f"Microsoft server error: {response.status_code}")
 
     if response.status_code >= 400:
+        # Body withheld: a Graph error echoes the submitted message, putting
+        # campaign HTML and the recipient address into log retention.
         logger.error(
-            "Graph API send failed. status=%s response=%s",
+            "Graph API send failed. status=%s code=%s",
             response.status_code,
-            response.text,
+            _graph_error_code(response),
         )
         raise PermanentEmailError(
             f"Permanent Graph API send failed: {response.status_code}"
         )
+
+
+def _graph_error_code(response: requests.Response) -> str:
+    """Pull Graph's machine-readable error code, without touching the message."""
+    try:
+        return str(response.json()["error"]["code"])
+    except Exception:
+        return "unknown"
