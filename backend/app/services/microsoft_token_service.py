@@ -56,4 +56,4 @@ def refresh_access_token(*, db: Session, user: User) -> None:
 
     db.commit()
 
-    logger.info("Microsoft token refreshed successfully. user=%s", user.email)
+    logger.info("Microsoft token refreshed successfully. user=%s", user.id)

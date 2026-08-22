@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["health"])
 
 
-def _failure(component: str, exc: Exception) -> dict:
+def _failure(component: str, exc: Exception) -> dict[str, str]:
     """
     Report a failed check without describing the infrastructure.
 
@@ -31,7 +31,7 @@ def _failure(component: str, exc: Exception) -> dict:
     return {"status": "error"}
 
 
-def _check_database() -> dict:
+def _check_database() -> dict[str, str]:
     db = None
     try:
         db = SessionLocal()
@@ -47,11 +47,15 @@ def _check_database() -> dict:
             db.close()
 
 
-def _check_redis() -> dict:
+def _check_redis() -> dict[str, str]:
     client = None
     try:
+        # SSL options only apply to rediss:// URLs; passing them for a plain
+        # redis:// connection is at best ignored and at worst an error.
         client = redis.Redis.from_url(
-            settings.REDIS_URL, ssl_cert_reqs=None, socket_connect_timeout=2
+            settings.REDIS_URL,
+            socket_connect_timeout=2,
+            **(settings.redis_ssl_options or {}),
         )
         client.ping()
         return {"status": "ok"}

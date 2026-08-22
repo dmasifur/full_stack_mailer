@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-from datetime import datetime
+from collections.abc import Callable
 import logging
 from pathlib import Path
+import tempfile
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, get_db
+from app.core.config import settings
 from app.models.campaign import Campaign
 from app.models.campaign_cc_recipient import CampaignCcRecipient
+from app.models.campaign_recipient import CampaignRecipient
 from app.models.sender_address import SenderAddress
 from app.models.template import Template
 from app.models.user import User
@@ -18,9 +22,14 @@ from app.schemas.campaign import (
     CampaignCreate,
     CampaignListResponse,
     CampaignResponse,
+    CampaignSchedule,
+    CampaignStatsResponse,
     CampaignUpdate,
     CcRecipientAdd,
     CcRecipientResponse,
+    ImportSummarySchema,
+    RecipientListResponse,
+    RecipientResponse,
     RecipientUploadResponse,
 )
 from app.services.campaign_state import CampaignTransitionError, transition
@@ -31,9 +40,6 @@ from app.workers.send_campaign import send_campaign_task
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
-
-UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
 
 
 def _get_campaign_or_404(
@@ -114,6 +120,85 @@ def _validate_from_address(
     return from_address
 
 
+def _assert_sendable(*, db: Session, campaign: Campaign) -> None:
+    """
+    Refuse to launch a campaign that cannot actually send.
+
+    The worker only picks up recipients at 'pending' with dns_valid true. Without
+    this check a campaign with none finds nothing to do and completes itself
+    having sent nothing — and 'completed' is terminal.
+    """
+    counts: dict[str, int] = dict(
+        db.query(CampaignRecipient.status, func.count())
+        .filter(CampaignRecipient.campaign_id == str(campaign.id))
+        .group_by(CampaignRecipient.status)
+        .tuples()
+        .all()
+    )
+
+    if not counts:
+        raise HTTPException(
+            status_code=409,
+            detail="Campaign has no recipients. Upload a CSV before sending.",
+        )
+
+    awaiting = counts.get("pending_validation", 0)
+    if awaiting:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{awaiting} recipient(s) are still awaiting DNS validation. "
+                "Wait for validation to finish before sending."
+            ),
+        )
+
+    if not counts.get("pending", 0) and not counts.get("sending", 0):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "No sendable recipients remain — every address is already sent, "
+                "failed, or invalid."
+            ),
+        )
+
+
+def _transition_and_dispatch(
+    *,
+    db: Session,
+    campaign: Campaign,
+    to_status: str,
+    dispatch: Callable[[], object],
+) -> None:
+    """
+    Move a campaign to `to_status` and hand it to Celery, atomically enough.
+
+    Reverting on dispatch failure keeps the database honest about what is
+    actually queued: 'running' has no transition back to 'draft', so a campaign
+    committed without a task behind it is stuck.
+    """
+    previous_status = campaign.status
+
+    try:
+        transition(campaign, to_status)
+    except CampaignTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    db.commit()
+
+    try:
+        dispatch()
+    except Exception as exc:
+        logger.exception(
+            "Broker dispatch failed; reverting campaign status. id=%s", campaign.id
+        )
+        campaign.status = previous_status
+        db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail="Could not queue the campaign — the task broker is unavailable.",
+        ) from exc
+
+
 def _sync_cc_recipients(
     *,
     db: Session,
@@ -169,7 +254,7 @@ def create_campaign(
     db.commit()
     db.refresh(campaign)
 
-    logger.info("Campaign created. id=%s user=%s", campaign.id, current_user.email)
+    logger.info("Campaign created. id=%s user=%s", campaign.id, current_user.id)
     return campaign
 
 
@@ -364,91 +449,185 @@ def upload_recipients_csv(
 ) -> RecipientUploadResponse:
     campaign = _get_campaign_or_404(campaign_id, db, current_user)
 
-    if not (file.filename or "").endswith(".csv"):
+    if not (file.filename or "").lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files are supported.")
 
-    unique_filename = f"{uuid4()}.csv"
-    save_file_path = UPLOAD_DIR / unique_filename
+    with tempfile.TemporaryDirectory(prefix="recipient-upload-") as staging:
+        save_file_path = Path(staging) / f"{uuid4()}.csv"
 
-    try:
-        with save_file_path.open("wb") as output:
-            while chunk := file.file.read(1024 * 1024):
-                output.write(chunk)
+        _stream_to_disk(file, save_file_path)
 
-        summary = import_recipients_from_csv(
-            db=db, campaign_id=str(campaign.id), file_path=save_file_path
-        )
+        try:
+            summary = import_recipients_from_csv(
+                db=db, campaign_id=str(campaign.id), file_path=save_file_path
+            )
 
-        return RecipientUploadResponse(
-            message="Recipients imported successfully.",
-            summary={
-                "total_rows": summary.total_rows,
-                "imported": summary.imported,
-                "invalid": summary.invalid,
-            },
-        )
+        # A file the caller got wrong is a 400, not a 500.
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except UnicodeDecodeError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="CSV must be UTF-8 encoded.",
+            ) from exc
+        except Exception as exc:
+            logger.exception("Failed to upload recipient CSV")
+            raise HTTPException(
+                status_code=500, detail="Failed to process CSV upload."
+            ) from exc
 
-    except Exception as exc:
-        logger.exception("Failed to upload recipient CSV")
-        raise HTTPException(
-            status_code=500, detail="Failed to process CSV upload."
-        ) from exc
+    return RecipientUploadResponse(
+        message="Recipients imported successfully.",
+        summary=ImportSummarySchema(
+            total_rows=summary.total_rows,
+            imported=summary.imported,
+            invalid=summary.invalid,
+        ),
+    )
 
-    finally:
-        if save_file_path.exists():
-            save_file_path.unlink(missing_ok=True)
+
+def _stream_to_disk(file: UploadFile, destination: Path) -> None:
+    """
+    Write an upload to disk, refusing anything over MAX_UPLOAD_BYTES.
+
+    Enforced while streaming: UploadFile does not know the length up front and
+    Content-Length is caller-controlled.
+    """
+    written = 0
+
+    with destination.open("wb") as output:
+        while chunk := file.file.read(1024 * 1024):
+            written += len(chunk)
+
+            if written > settings.MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        "File exceeds maximum allowed size of "
+                        f"{settings.MAX_UPLOAD_BYTES // 1024 // 1024} MB."
+                    ),
+                )
+
+            output.write(chunk)
 
 
-@router.post("/{campaign_id}/start", response_model=dict)
+@router.get("/{campaign_id}/recipients", response_model=RecipientListResponse)
+def list_recipients(
+    campaign_id: str,
+    status: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> RecipientListResponse:
+    """List a campaign's recipients, optionally filtered by status."""
+    _get_campaign_or_404(campaign_id, db, current_user)
+
+    base_query = db.query(CampaignRecipient).filter(
+        CampaignRecipient.campaign_id == campaign_id
+    )
+
+    if status:
+        base_query = base_query.filter(CampaignRecipient.status == status)
+
+    total = base_query.count()
+    items = (
+        base_query.order_by(CampaignRecipient.created_at)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return RecipientListResponse(
+        items=[RecipientResponse.model_validate(r) for r in items],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/{campaign_id}/stats", response_model=CampaignStatsResponse)
+def campaign_stats(
+    campaign_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> CampaignStatsResponse:
+    """Recipient counts per status — what a campaign actually did."""
+    campaign = _get_campaign_or_404(campaign_id, db, current_user)
+
+    by_status: dict[str, int] = dict(
+        db.query(CampaignRecipient.status, func.count())
+        .filter(CampaignRecipient.campaign_id == campaign_id)
+        .group_by(CampaignRecipient.status)
+        .tuples()
+        .all()
+    )
+
+    return CampaignStatsResponse(
+        campaign_id=campaign.id,
+        status=campaign.status,
+        total_recipients=sum(by_status.values()),
+        by_status=by_status,
+        sent=by_status.get("sent", 0),
+        failed=by_status.get("failed", 0),
+        pending=by_status.get("pending", 0),
+        awaiting_validation=by_status.get("pending_validation", 0),
+        invalid=by_status.get("invalid", 0),
+    )
+
+
+@router.post("/{campaign_id}/start", response_model=dict[str, str])
 def start_campaign(
     campaign_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> dict:
+) -> dict[str, str]:
     campaign = _get_campaign_or_404(campaign_id, db, current_user)
+    _assert_sendable(db=db, campaign=campaign)
 
-    try:
-        transition(campaign, "running")
-    except CampaignTransitionError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _transition_and_dispatch(
+        db=db,
+        campaign=campaign,
+        to_status="running",
+        dispatch=lambda: send_campaign_task.delay(str(campaign.id)),
+    )
 
-    db.commit()
-    send_campaign_task.delay(str(campaign.id))
+    logger.info("Campaign queued. id=%s", campaign_id)
     return {"message": "Campaign queued successfully."}
 
 
-@router.post("/{campaign_id}/schedule", response_model=dict)
+@router.post("/{campaign_id}/schedule", response_model=dict[str, str])
 def schedule_campaign(
     campaign_id: str,
-    scheduled_at: datetime,
+    body: CampaignSchedule,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> dict:
+) -> dict[str, str]:
     campaign = _get_campaign_or_404(campaign_id, db, current_user)
+    _assert_sendable(db=db, campaign=campaign)
 
-    try:
-        transition(campaign, "scheduled")
-    except CampaignTransitionError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    campaign.scheduled_at = body.scheduled_at
 
-    campaign.scheduled_at = scheduled_at
-    db.commit()
-
-    send_campaign_task.apply_async(
-        args=[str(campaign.id)],
-        eta=scheduled_at,
+    _transition_and_dispatch(
+        db=db,
+        campaign=campaign,
+        to_status="scheduled",
+        dispatch=lambda: send_campaign_task.apply_async(
+            args=(str(campaign.id),),
+            eta=body.scheduled_at,
+        ),
     )
 
-    logger.info("Campaign scheduled. id=%s eta=%s", campaign_id, scheduled_at)
+    logger.info("Campaign scheduled. id=%s eta=%s", campaign_id, body.scheduled_at)
     return {"message": "Campaign scheduled successfully."}
 
 
-@router.post("/{campaign_id}/pause", response_model=dict)
+@router.post("/{campaign_id}/pause", response_model=dict[str, str])
 def pause_campaign(
     campaign_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> dict:
+) -> dict[str, str]:
     campaign = _get_campaign_or_404(campaign_id, db, current_user)
 
     try:
@@ -461,31 +640,35 @@ def pause_campaign(
     return {"message": "Campaign paused successfully."}
 
 
-@router.post("/{campaign_id}/resume", response_model=dict)
+@router.post("/{campaign_id}/resume", response_model=dict[str, str])
 def resume_campaign(
     campaign_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> dict:
+) -> dict[str, str]:
     campaign = _get_campaign_or_404(campaign_id, db, current_user)
 
-    try:
-        transition(campaign, "scheduled")
-    except CampaignTransitionError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # Cleared so the beat reconciler cannot match this campaign and dispatch a
+    # second task alongside the one queued below.
+    campaign.scheduled_at = None
 
-    db.commit()
-    send_campaign_task.delay(str(campaign.id))
+    _transition_and_dispatch(
+        db=db,
+        campaign=campaign,
+        to_status="running",
+        dispatch=lambda: send_campaign_task.delay(str(campaign.id)),
+    )
+
     logger.info("Campaign resumed. id=%s", campaign_id)
     return {"message": "Campaign resumed successfully."}
 
 
-@router.post("/{campaign_id}/retry", response_model=dict)
+@router.post("/{campaign_id}/retry", response_model=dict[str, str])
 def retry_campaign(
     campaign_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> dict:
+) -> dict[str, str]:
     """
     Re-queue a campaign that ended in 'failed'.
 
@@ -493,13 +676,14 @@ def retry_campaign(
     check, so this picks up the remaining ones rather than resending.
     """
     campaign = _get_campaign_or_404(campaign_id, db, current_user)
+    campaign.scheduled_at = None
 
-    try:
-        transition(campaign, "running")
-    except CampaignTransitionError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _transition_and_dispatch(
+        db=db,
+        campaign=campaign,
+        to_status="running",
+        dispatch=lambda: send_campaign_task.delay(str(campaign.id)),
+    )
 
-    db.commit()
-    send_campaign_task.delay(str(campaign.id))
     logger.info("Campaign retried. id=%s", campaign_id)
     return {"message": "Campaign re-queued successfully."}

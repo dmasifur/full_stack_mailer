@@ -1,7 +1,11 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
 import logging
 import time
 
-from sqlalchemy import select
+from celery import Task
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
@@ -24,14 +28,23 @@ logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 10
 EMAIL_DELAY_SECONDS = 5
+MAX_RETRIES = 3
+
+# How long a recipient may sit at "sending" before another run reclaims it.
+# Only a crashed worker leaves rows in that state.
+STALE_SENDING_AFTER = timedelta(minutes=30)
+
+# Anything outside this set means the task is stale and must be dropped.
+STARTABLE_STATUSES = frozenset({"draft", "scheduled", "running"})
 
 
 @celery_app.task(
+    bind=True,
     autoretry_for=(RetryableEmailError,),
     retry_backoff=True,
-    retry_kwargs={"max_retries": 3},
+    retry_kwargs={"max_retries": MAX_RETRIES},
 )
-def send_campaign_task(campaign_id: str) -> None:
+def send_campaign_task(self: Task[..., None], campaign_id: str) -> None:
 
     db: Session = SessionLocal()
 
@@ -48,13 +61,26 @@ def send_campaign_task(campaign_id: str) -> None:
             logger.error("User not found for campaign.")
             return
 
+        # The only place a stale task can be stopped: the pause check inside the
+        # loop below runs after the transition, too late to help.
+        if campaign.status not in STARTABLE_STATUSES:
+            logger.info(
+                "Dropping stale send task; campaign is not startable. id=%s status=%s",
+                campaign_id,
+                campaign.status,
+            )
+            return
+
         if campaign.status != "running":
             transition(campaign, "running")
             db.commit()
 
         logger.info("Campaign started: %s", campaign_id)
 
-        # Fetch CC list once — it's the same for every recipient in the campaign.
+        # A worker killed mid-send leaves rows at "sending", matching neither
+        # the pending filter nor "sent".
+        _release_stale_sending(db=db, campaign_id=campaign_id)
+
         cc_emails = _get_cc_emails(db=db, campaign_id=campaign_id)
 
         while True:
@@ -100,25 +126,21 @@ def send_campaign_task(campaign_id: str) -> None:
                     return
 
                 except RetryableEmailError:
-                    logger.exception(
-                        "Retryable send error. recipient=%s", recipient.email
-                    )
+                    logger.exception("Retryable send error. recipient=%s", recipient.id)
                     raise
 
                 # A permanent failure belongs to one recipient, not the campaign.
-                # The row is already marked "failed" with its reason by
-                # _send_single_recipient, so carry on with the rest of the batch.
                 except PermanentEmailError:
                     logger.warning(
                         "Permanent send failure — skipping recipient. recipient=%s",
-                        recipient.email,
+                        recipient.id,
                         exc_info=True,
                     )
                     continue
 
                 except Exception:
                     logger.exception(
-                        "Unexpected recipient failure. recipient=%s", recipient.email
+                        "Unexpected recipient failure. recipient=%s", recipient.id
                     )
                     raise
 
@@ -128,15 +150,24 @@ def send_campaign_task(campaign_id: str) -> None:
             transition(campaign, "completed")
             db.commit()
 
-    # Retryable errors must NOT mark the campaign failed — Celery's autoretry
-    # will re-run this task and pick up where the batch left off.
+    # Retryable errors must not fail the campaign — autoretry resumes it. Except
+    # on the last attempt, after which no task remains to resume it.
     except RetryableEmailError:
         db.rollback()
-        logger.warning(
-            "Campaign send interrupted by a retryable error. campaign=%s",
-            campaign_id,
-            exc_info=True,
-        )
+
+        if self.request.retries >= MAX_RETRIES:
+            logger.error(
+                "Retries exhausted; marking campaign failed. campaign=%s",
+                campaign_id,
+                exc_info=True,
+            )
+            _mark_failed(db=db, campaign_id=campaign_id)
+        else:
+            logger.warning(
+                "Campaign send interrupted by a retryable error. campaign=%s",
+                campaign_id,
+                exc_info=True,
+            )
         raise
 
     except Exception:
@@ -163,9 +194,7 @@ def _mark_failed(*, db: Session, campaign_id: str) -> None:
         if not campaign:
             return
 
-        # Anything caught mid-flight is left at "sending", which no query picks
-        # up again — the pending filter looks for "pending". Release those rows
-        # so /retry can actually resend them.
+        # Release rows left at "sending" so /retry can resend them.
         released = (
             db.query(CampaignRecipient)
             .filter(
@@ -207,13 +236,13 @@ def _send_single_recipient(
     )
 
     if existing_log:
-        logger.info("Skipping already sent recipient: %s", recipient.email)
+        logger.info("Skipping already sent recipient. id=%s", recipient.id)
         recipient.status = "sent"
         db.commit()
         return
 
-    recipient.status = "sending"
-    db.commit()
+    # No "sending" write here: the claim in _get_pending_recipients set it, which
+    # is what makes the claim survive the commits below.
 
     try:
         try:
@@ -257,12 +286,10 @@ def _send_single_recipient(
         db.add(email_log)
         db.commit()
 
-        logger.info("Email sent successfully: %s", recipient.email)
+        logger.info("Email sent successfully. recipient=%s", recipient.id)
 
-    # Retryable and auth errors are campaign-level problems, not recipient-level
-    # ones — the address is fine, the transport or the token isn't. Re-raise them
-    # untouched so the caller can retry or pause without burning a retry_count or
-    # writing a misleading "failed" log against an address that was never tried.
+    # Campaign-level problems, not recipient-level: the address is fine, the
+    # transport or token is not. Re-raise without blaming the recipient.
     except RetryableEmailError, EmailAuthError:
         raise
 
@@ -283,7 +310,7 @@ def _send_single_recipient(
         db.add(email_log)
         db.commit()
 
-        logger.exception("Email send failed: %s", recipient.email)
+        logger.exception("Email send failed. recipient=%s", recipient.id)
         raise
 
 
@@ -296,19 +323,66 @@ def _get_cc_emails(*, db: Session, campaign_id: str) -> list[str]:
     return [row.email for row in rows]
 
 
+def _release_stale_sending(*, db: Session, campaign_id: str) -> None:
+    """Return recipients abandoned at 'sending' by a crashed worker to 'pending'."""
+    cutoff = datetime.now(tz=UTC) - STALE_SENDING_AFTER
+
+    released = (
+        db.query(CampaignRecipient)
+        .filter(
+            CampaignRecipient.campaign_id == campaign_id,
+            CampaignRecipient.status == "sending",
+            CampaignRecipient.updated_at < cutoff,
+        )
+        .update({CampaignRecipient.status: "pending"}, synchronize_session=False)
+    )
+
+    if released:
+        db.commit()
+        logger.warning(
+            "Released %s recipient(s) stranded at 'sending'. campaign=%s",
+            released,
+            campaign_id,
+        )
+
+
 def _get_pending_recipients(
     *,
     db: Session,
     campaign_id: str,
 ) -> list[CampaignRecipient]:
-    query_statement = (
-        select(CampaignRecipient)
+    """
+    Claim up to BATCH_SIZE recipients, atomically.
+
+    Must be a single UPDATE, not SELECT ... FOR UPDATE followed by writes: those
+    locks are released by the first commit inside the send loop, freeing the rest
+    of the batch for a second worker. See docs/architecture.md.
+    """
+    claimable = (
+        select(CampaignRecipient.id)
         .where(
             CampaignRecipient.campaign_id == campaign_id,
             CampaignRecipient.status == "pending",
             CampaignRecipient.dns_valid.is_(True),
         )
+        .order_by(CampaignRecipient.created_at)
         .limit(BATCH_SIZE)
         .with_for_update(skip_locked=True)
+        .scalar_subquery()
     )
-    return db.execute(query_statement).scalars().all()
+
+    claim = (
+        update(CampaignRecipient)
+        .where(CampaignRecipient.id.in_(claimable))
+        .values(status="sending")
+        .returning(CampaignRecipient)
+    )
+
+    recipients = list(
+        db.execute(claim, execution_options={"synchronize_session": False})
+        .scalars()
+        .all()
+    )
+    db.commit()
+
+    return recipients

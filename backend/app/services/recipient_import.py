@@ -28,7 +28,7 @@ def import_recipients_from_csv(
     file_path: Path,
 ) -> ImportSummary:
     summary = ImportSummary()
-    pending_rows: list[dict] = []
+    pending_rows: list[dict[str, object]] = []
 
     with file_path.open("r", newline="", encoding="utf-8") as file:
         reader = csv.DictReader(file)
@@ -52,7 +52,6 @@ def import_recipients_from_csv(
                     "email": email,
                     "first_name": (row.get("first_name") or "").strip() or None,
                     "last_name": (row.get("last_name") or "").strip() or None,
-                    # DNS validation happens asynchronously (Phase 4.2)
                     "dns_valid": None,
                     "status": "pending_validation",
                     "failure_reason": None,
@@ -74,12 +73,21 @@ def import_recipients_from_csv(
         summary.invalid,
     )
 
-    validate_recipients_task.delay(campaign_id)
+    # Rows are already committed, so a broker outage must not turn a successful
+    # import into a 500. The reconciler sweeps anything left behind.
+    try:
+        validate_recipients_task.delay(campaign_id)
+    except Exception:
+        logger.exception(
+            "Could not queue DNS validation; the reconciler will pick it up. "
+            "campaign=%s",
+            campaign_id,
+        )
 
     return summary
 
 
-def _insert_batch(db: Session, rows: list[dict]) -> None:
+def _insert_batch(db: Session, rows: list[dict[str, object]]) -> None:
 
     try:
         stmt = (

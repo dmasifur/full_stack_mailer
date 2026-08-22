@@ -1,4 +1,12 @@
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import BaseModel
@@ -12,6 +20,12 @@ class CampaignRecipient(BaseModel):
             "campaign_id",
             "email",
             name="uq_campaign_recipients_campaign_email",
+        ),
+        # The send worker's hot path filters on exactly this pair.
+        Index(
+            "ix_campaign_recipients_campaign_id_status",
+            "campaign_id",
+            "status",
         ),
     )
 
@@ -36,7 +50,6 @@ class CampaignRecipient(BaseModel):
         nullable=False,
         index=True,
     )
-    # Nullable: set to True/False by the background DNS validation task.
     # NULL means "not yet validated".
     dns_valid: Mapped[bool] = mapped_column(
         Boolean,

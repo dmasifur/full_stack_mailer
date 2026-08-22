@@ -29,6 +29,21 @@ def create_sender_address(
     Save a sender address (own mailbox or shared mailbox) for use in campaigns.
     If is_default=True, any existing default for this user is cleared first.
     """
+    existing = (
+        db.query(SenderAddress)
+        .filter(
+            SenderAddress.user_id == str(current_user.id),
+            SenderAddress.email == str(body.email),
+        )
+        .first()
+    )
+
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{body.email}' is already registered as a sender address.",
+        )
+
     if body.is_default:
         _clear_default(db=db, user_id=str(current_user.id))
 
@@ -43,10 +58,9 @@ def create_sender_address(
     db.refresh(sender)
 
     logger.info(
-        "Sender address saved. id=%s email=%s user=%s",
+        "Sender address saved. id=%s user=%s",
         sender.id,
-        sender.email,
-        current_user.email,
+        current_user.id,
     )
     return sender
 
@@ -97,7 +111,7 @@ def delete_sender_address(
     sender = _get_or_404(db=db, address_id=address_id, user_id=str(current_user.id))
     db.delete(sender)
     db.commit()
-    logger.info("Sender address deleted. id=%s user=%s", address_id, current_user.email)
+    logger.info("Sender address deleted. id=%s user=%s", address_id, current_user.id)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

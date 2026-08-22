@@ -1,8 +1,10 @@
-import ssl
-
 from celery import Celery
 
 from app.core.config import settings
+
+# Sent only for rediss:// — SSL options on a plain redis:// URL are silently
+# ignored, which hides whether verification is actually in force.
+_ssl_options = settings.redis_ssl_options
 
 celery_app = Celery(
     "full_stack_mailer",
@@ -24,14 +26,9 @@ celery_app.conf.update(
     task_acks_late=True,
     worker_prefetch_multiplier=1,
     task_track_started=True,
-    broker_use_ssl={
-        "ssl_cert_reqs": ssl.CERT_NONE,
-    },
-    redis_backend_use_ssl={
-        "ssl_cert_reqs": ssl.CERT_NONE,
-    },
-    # The Procfile runs a beat process; without a schedule it does nothing.
-    # The reconciler is what makes scheduling durable — an apply_async(eta=...)
+    broker_use_ssl=_ssl_options,
+    redis_backend_use_ssl=_ssl_options,
+    # The reconciler is what makes scheduling durable: an apply_async(eta=...)
     # task lives only in the broker and is lost if Redis is flushed.
     beat_schedule={
         "reconcile-campaigns": {

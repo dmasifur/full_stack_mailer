@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from celery import Task
 import dns.exception
 import dns.resolver
 from sqlalchemy.orm import Session
@@ -21,7 +22,7 @@ BATCH_SIZE = 200
     max_retries=3,
     default_retry_delay=30,
 )
-def validate_recipients_task(self, campaign_id: str) -> None:
+def validate_recipients_task(self: Task[..., None], campaign_id: str) -> None:
 
     db: Session = SessionLocal()
 

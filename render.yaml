@@ -1,0 +1,129 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# The application lives in backend/, not at the repository root, so every
+# service sets `rootDir: backend`. Render then finds pyproject.toml, uv.lock and
+# .python-version there, which is what makes the native Python runtime detect
+# the app and use uv.
+#
+# Redis is NOT declared here: this project uses Upstash, which is external to
+# Render. Set REDIS_URL manually on the environment group (see below).
+#
+# To deploy: Render Dashboard → New → Blueprint → point at this repo.
+
+envVarGroups:
+  # One group shared by all three services, so the secrets are entered once and
+  # the web process and the workers cannot drift apart.
+  - name: mailer-config
+    envVars:
+      - key: APP_ENV
+        value: production
+
+      # --- set these by hand in the Render dashboard ---------------------
+      # Upstash connection string. Must be the rediss:// (TLS) URL — Upstash
+      # presents a publicly-trusted certificate, so leave REDIS_SSL_CERT_REQS
+      # at its "required" default.
+      - key: REDIS_URL
+        sync: false
+
+      - key: MICROSOFT_CLIENT_ID
+        sync: false
+      - key: MICROSOFT_CLIENT_SECRET
+        sync: false
+      - key: MICROSOFT_TENANT_ID
+        sync: false
+      # Must match the Azure app registration exactly, e.g.
+      # https://<your-web-service>.onrender.com/auth/microsoft/callback
+      - key: MICROSOFT_REDIRECT_URI
+        sync: false
+
+      # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
+      # python -c "import secrets; print(secrets.token_hex(32))"
+      - key: SECRET_KEY
+        sync: false
+
+      # Comma-separated. Must not contain "*" — the app refuses to start,
+      # because credentials are enabled on CORS.
+      - key: ALLOWED_ORIGINS_RAW
+        sync: false
+
+      # Leave unset until a frontend exists; the OAuth callback then returns
+      # JSON instead of redirecting.
+      - key: FRONTEND_URL
+        sync: false
+
+      # --- R2 template storage (optional) --------------------------------
+      - key: R2_ENDPOINT_URL
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        value: mailer-templates
+
+services:
+  - type: web
+    name: mailer-api
+    runtime: python
+    rootDir: backend
+    plan: starter
+    buildCommand: uv sync --locked
+    # --proxy-headers is required: without it uvicorn reports Render's load
+    # balancer as the client address and the OAuth login rate limit collapses
+    # into a single shared bucket for every user.
+    startCommand: >-
+      uvicorn main:app --host 0.0.0.0 --port $PORT
+      --proxy-headers --forwarded-allow-ips="*"
+    healthCheckPath: /health
+    # Runs after the build, before traffic shifts to the new version.
+    # Requires a paid instance type; on the free tier, run migrations manually
+    # from the Render shell instead.
+    preDeployCommand: uv run alembic upgrade head
+    envVars:
+      - fromGroup: mailer-config
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mailer-db
+          property: connectionString
+
+  - type: worker
+    name: mailer-worker
+    runtime: python
+    rootDir: backend
+    plan: starter
+    buildCommand: uv sync --locked
+    startCommand: >-
+      uv run celery -A app.workers.celery.celery_app worker
+      --loglevel=info --concurrency=4
+    envVars:
+      - fromGroup: mailer-config
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mailer-db
+          property: connectionString
+
+  # Exactly one instance, always. A second beat process means duplicate
+  # reconciler ticks, which can dispatch the same campaign twice.
+  - type: worker
+    name: mailer-beat
+    runtime: python
+    rootDir: backend
+    plan: starter
+    numInstances: 1
+    buildCommand: uv sync --locked
+    startCommand: >-
+      uv run celery -A app.workers.celery.celery_app beat --loglevel=info
+    envVars:
+      - fromGroup: mailer-config
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mailer-db
+          property: connectionString
+
+databases:
+  - name: mailer-db
+    databaseName: full_stack_mailer
+    user: mailer
+    plan: basic-256mb

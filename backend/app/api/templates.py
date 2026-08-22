@@ -72,7 +72,7 @@ async def upload_template_file(
         "Template uploaded. id=%s name=%s user=%s",
         template.id,
         name,
-        current_user.email,
+        current_user.id,
     )
     return template
 
@@ -118,4 +118,4 @@ def delete_template_record(
     db.delete(template)
     db.commit()
 
-    logger.info("Template deleted. id=%s user=%s", template_id, current_user.email)
+    logger.info("Template deleted. id=%s user=%s", template_id, current_user.id)
