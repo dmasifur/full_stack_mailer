@@ -1,9 +1,8 @@
 from sqlalchemy import MetaData
 from sqlalchemy.orm import DeclarativeBase
 
-# Deterministic constraint names. Without these, autogenerate emits
-# op.create_foreign_key(None, ...) / op.drop_constraint(None, ...), and the
-# drop side is unrunnable because None is not a resolvable constraint name.
+# Deterministic constraint names — without them autogenerate emits None for
+# constraint names and the downgrade side is unrunnable.
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
     "uq": "uq_%(table_name)s_%(column_0_name)s",
