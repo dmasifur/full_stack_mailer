@@ -1,0 +1,200 @@
+# Deployment
+
+Target platform: **Render**, via the Blueprint at [`../render.yaml`](../render.yaml).
+
+- Local setup → [../README.md](../README.md)
+- System design → [architecture.md](architecture.md)
+
+---
+
+## Process model
+
+Three processes share one Postgres database and one Redis instance:
+
+| Process | Command | Responsibility |
+| --- | --- | --- |
+| **web** | `uvicorn main:app` | The HTTP API. Owns all state changes. |
+| **worker** | `celery ... worker` | Sends campaigns, validates recipient domains. |
+| **beat** | `celery ... beat` | Ticks every 60s to run the reconciler. |
+
+`backend/Procfile` carries the flags production needs:
+
+```
+web:    uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips="*"
+worker: celery -A app.workers.celery.celery_app worker --loglevel=info --concurrency=4
+beat:   celery -A app.workers.celery.celery_app beat --loglevel=info
+```
+
+> **Run exactly one beat process.** Two means duplicate reconciler ticks, and a campaign
+> dispatched twice.
+
+---
+
+## The app lives in a subdirectory
+
+Buildpacks look for `pyproject.toml`, `uv.lock`, `.python-version`, and `Procfile` at the **app
+root**. All four are in `backend/`, so detection fails unless the platform is pointed at the
+subdirectory. Every service in `render.yaml` sets `rootDir: backend` for this reason.
+
+Render's native Python runtime defaults to 3.14 and supports `uv`, so no Dockerfile is needed —
+and no `requirements.txt`, which would conflict with `uv.lock`.
+
+Deploying elsewhere? Same principle. On Heroku that means
+[`heroku-buildpack-monorepo`](https://github.com/lstoll/heroku-buildpack-monorepo) with
+`APP_BASE=backend`; Heroku's Python buildpack also ships 3.14 and `uv`.
+
+---
+
+## First deploy
+
+### 1. Apply the Blueprint
+
+**Render Dashboard → New → Blueprint**, pointing at this repository. It creates three services
+(`mailer-api`, `mailer-worker`, `mailer-beat`), a Postgres instance (`mailer-db`), and a shared
+environment group (`mailer-config`).
+
+`DATABASE_URL` is wired automatically from `mailer-db` to all three services.
+
+### 2. Fill in the secrets
+
+Every `sync: false` variable in the `mailer-config` group must be set by hand. **The services
+will not boot until the four secrets are present.**
+
+Generate the two the app owns:
+
+```bash
+# TOKEN_ENCRYPTION_KEY
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# SECRET_KEY
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Take `MICROSOFT_CLIENT_ID` and `MICROSOFT_CLIENT_SECRET` from the Azure app registration.
+
+### 3. Set `REDIS_URL`
+
+Redis is deliberately **not** in the Blueprint — this project uses Upstash, which is external
+to Render. Set `REDIS_URL` on the environment group using the `rediss://` (TLS) URL.
+
+Upstash presents a publicly-trusted certificate, so leave `REDIS_SSL_CERT_REQS` at its
+`required` default. See [Redis TLS](#redis-tls) below.
+
+### 4. Wire the OAuth redirect
+
+This is circular, so it comes after the first apply: you need the web service's hostname before
+you can set the redirect URI, and Azure must be told the same value.
+
+1. Copy the web service's `https://<name>.onrender.com` hostname.
+2. Set `MICROSOFT_REDIRECT_URI` to `https://<name>.onrender.com/auth/microsoft/callback`.
+3. Register that **exact** URI in the Azure app registration. A mismatch fails the exchange.
+4. Set `ALLOWED_ORIGINS_RAW` to the origins that will call the API, comma-separated.
+
+The Azure app registration needs these delegated Microsoft Graph scopes:
+
+```
+offline_access  openid  profile  email  User.Read  Mail.Send  Mail.Send.Shared
+```
+
+### 5. Migrations
+
+`render.yaml` runs them via `preDeployCommand`, after the build and before traffic shifts:
+
+```
+uv run alembic upgrade head
+```
+
+That requires a paid instance type. On the free tier, remove the line and run it from the
+Render shell instead.
+
+---
+
+## Configuration reference
+
+All settings are read from the environment (see `app/core/config.py`). Names are
+case-sensitive.
+
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `APP_NAME` | no | `Full Stack Mailer` | OpenAPI title. |
+| `APP_ENV` | no | `development` | Anything other than `development` is treated as production. |
+| `DATABASE_URL` | **yes** | — | Wired from `mailer-db` by the Blueprint. |
+| `REDIS_URL` | **yes** | — | Upstash `rediss://` URL. |
+| `MICROSOFT_CLIENT_ID` | **yes** | — | Azure app registration. |
+| `MICROSOFT_CLIENT_SECRET` | **yes** | — | Azure app registration. |
+| `MICROSOFT_TENANT_ID` | no | `common` | `common` for multi-tenant, or a tenant GUID. |
+| `MICROSOFT_REDIRECT_URI` | **yes** | — | Must match Azure exactly. |
+| `TOKEN_ENCRYPTION_KEY` | **yes** | — | Fernet key encrypting stored Graph tokens at rest. |
+| `SECRET_KEY` | **yes** | — | Signs session tokens and the OAuth `state`. |
+| `ACCESS_TOKEN_TTL_SECONDS` | no | `28800` (8h) | Session lifetime; also drives the cookie `max_age`. |
+| `ALLOWED_ORIGINS_RAW` | no | `http://localhost:3000` | Comma-separated CORS origins. `*` is rejected at startup. |
+| `FRONTEND_URL` | no | `""` | Post-login redirect target. Empty → the callback returns JSON. |
+| `MAX_UPLOAD_BYTES` | no | `10485760` | CSV upload cap. Exceeding it returns `413`. |
+| `REDIS_SSL_CERT_REQS` | no | `required` | `required`, `optional`, or `none`. |
+| `R2_ENDPOINT_URL` | no | `""` | `https://<account_id>.r2.cloudflarestorage.com` |
+| `R2_ACCESS_KEY_ID` | no | `""` | R2 credential. |
+| `R2_SECRET_ACCESS_KEY` | no | `""` | R2 credential. |
+| `R2_BUCKET_NAME` | no | `mailer-templates` | Bucket holding template HTML. |
+
+---
+
+## Production checklist
+
+- [ ] **`APP_ENV` is not `development`.** This is what makes the session and OAuth state
+      cookies `Secure`, and stops `/health` disclosing database hostnames to unauthenticated
+      callers. Set to `production` in `render.yaml`.
+- [ ] **Exactly one beat instance.**
+- [ ] **`--proxy-headers` on the web command.** Without it uvicorn sees the load balancer as
+      the client and the OAuth login rate limit becomes one shared bucket for every user.
+- [ ] **`MICROSOFT_REDIRECT_URI` matches Azure exactly.**
+- [ ] **`ALLOWED_ORIGINS_RAW` contains no `*`.** The app refuses to start if it does, because
+      credentials are enabled on CORS.
+- [ ] **Migrations ran** — `alembic upgrade head` against the production database.
+- [ ] **`/health` returns 200.** It checks Postgres and Redis; `503` means one is down.
+
+### Redis TLS
+
+`REDIS_SSL_CERT_REQS` defaults to `required`, which is correct for Upstash and any provider
+using a publicly-trusted certificate.
+
+Only relax it for a private CA, and prefer supplying the CA bundle over disabling verification.
+If the worker fails to connect on first boot with a certificate error, this is the setting to
+look at — but treat `none` as a stopgap, not a fix.
+
+### Failure modes
+
+| If this breaks | What happens |
+| --- | --- |
+| Redis unreachable | Rate limiting degrades to per-process counters; the API stays up. New campaigns cannot be queued — `/start` returns `503` and leaves the campaign untouched. |
+| Worker dies mid-campaign | The task is redelivered. Recipients stranded at `sending` are reclaimed after 30 minutes; already-sent addresses are skipped. |
+| Beat stops | Scheduled campaigns are not dispatched at their time. They are picked up as soon as beat returns — the database, not the broker, holds the schedule. |
+| Postgres unreachable | `/health` returns `503`. Nothing sends. |
+| Graph auth fails | The campaign pauses rather than failing, so it can resume after re-authentication. |
+
+---
+
+## Observability
+
+There is no metrics or error-tracking integration. Logs go to stdout, structured as
+`timestamp | level | logger | message`.
+
+Recipient and user email addresses are deliberately **not** logged — records carry ids
+instead. `email_logs` is the audit record of what was actually sent, and is the right place to
+answer "did this address receive the campaign?".
+
+Useful log lines during a send:
+
+```
+Campaign started: <id>
+Processing batch. campaign=<id> batch_size=10
+Email sent successfully. recipient=<recipient-id>
+Released N recipient(s) stranded at 'sending'. campaign=<id>
+Re-queued overdue scheduled campaign. id=<id> scheduled_at=<ts>
+```
+
+To diagnose a campaign that under-sent, prefer the API over the logs:
+
+```
+GET /campaigns/{id}/stats                    # counts per status
+GET /campaigns/{id}/recipients?status=failed # addresses and failure reasons
+```
