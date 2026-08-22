@@ -1,9 +1,16 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Protocol
 
-if TYPE_CHECKING:
-    from app.models.campaign import Campaign
+
+class HasStatus(Protocol):
+    """
+    Narrower than Campaign on purpose: the state machine has no business
+    touching the ORM.
+    """
+
+    status: str
+
 
 VALID_CAMPAIGN_STATUSES = {
     "draft",
@@ -29,7 +36,7 @@ class CampaignTransitionError(Exception):
     """Raised when a requested status transition is not permitted."""
 
 
-def transition(campaign: Campaign, to_status: str) -> None:
+def transition(campaign: HasStatus, to_status: str) -> None:
 
     if to_status not in VALID_CAMPAIGN_STATUSES:
         raise CampaignTransitionError(

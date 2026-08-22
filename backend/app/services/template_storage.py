@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 import uuid
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
+
+if TYPE_CHECKING:
+    # boto3-stubs is a dev-only dependency — never import it at runtime.
+    from mypy_boto3_s3.client import S3Client
 
 from app.core.config import settings
 
@@ -15,7 +20,7 @@ class TemplateStorageError(Exception):
     pass
 
 
-def _get_client():
+def _get_client() -> S3Client:
     return boto3.client(
         "s3",
         endpoint_url=settings.R2_ENDPOINT_URL,
@@ -60,7 +65,8 @@ def fetch_template(storage_key: str) -> str:
             Bucket=settings.R2_BUCKET_NAME,
             Key=storage_key,
         )
-        return response["Body"].read().decode("utf-8")
+        body: bytes = response["Body"].read()
+        return body.decode("utf-8")
 
     except (BotoCoreError, ClientError) as exc:
         logger.exception("R2 fetch failed. key=%s", storage_key)
