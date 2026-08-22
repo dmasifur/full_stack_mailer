@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        # The suite creates and drops its own database, so wait for the server
+        # to actually accept connections before pytest starts.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # conftest.py derives the test database from this and appends "_test";
+      # it refuses to run against a name that does not end in _test.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mailer
+      REDIS_URL: redis://localhost:6379/0
+      MICROSOFT_CLIENT_ID: ci-client-id
+      MICROSOFT_CLIENT_SECRET: ci-client-secret
+      MICROSOFT_REDIRECT_URI: http://localhost:8000/auth/microsoft/callback
+      # Deterministic throwaway values — never used against a real service.
+      TOKEN_ENCRYPTION_KEY: 2xTfkQ0m8rN1vJ7pYzL4gWcH6sB9dA3eK5nR8tU2wX0=
+      SECRET_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      ACCESS_TOKEN_TTL_SECONDS: "28800"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy
+
+      - name: Test
+        run: uv run pytest
+
+      - name: Build
+        run: uv build
