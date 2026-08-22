@@ -7,7 +7,6 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-_ACCESS_TOKEN_TTL_SECONDS = int(settings.ACCESS_TOKEN_TTL_SECONDS)
 _SALT = "access-token"
 
 
@@ -36,9 +35,9 @@ def decode_access_token(token: str) -> str:
         payload = serializer.loads(
             token,
             salt=_SALT,
-            max_age=_ACCESS_TOKEN_TTL_SECONDS,
+            max_age=settings.ACCESS_TOKEN_TTL_SECONDS,
         )
-        return payload["sub"]
+        return str(payload["sub"])
     except SignatureExpired as exc:
         raise TokenExpiredError("Access token has expired.") from exc
     except (BadSignature, KeyError) as exc:
