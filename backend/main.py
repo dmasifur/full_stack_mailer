@@ -18,7 +18,10 @@ setup_logging()
 app = FastAPI(title=settings.APP_NAME)
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# Starlette types the handler as taking a bare Exception; slowapi's is
+# narrower (RateLimitExceeded). Correct at runtime — Starlette only ever
+# invokes it for the exception class it was registered against.
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 app.add_middleware(SlowAPIMiddleware)
 
 
