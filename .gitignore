@@ -31,6 +31,10 @@ dist/
 node_modules/
 dist/
 coverage/
+# Vite build output, served by the API process
+backend/static/
+# TypeScript incremental build state
+*.tsbuildinfo
 # Celery runtime state
 celerybeat-schedule
 celerybeat.pid
