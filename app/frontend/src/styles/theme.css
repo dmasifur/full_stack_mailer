@@ -1,0 +1,219 @@
+/*
+ * asifur.dev Brand Guide v1.0, as tokens.
+ *
+ * Components read these; no component file carries a hex value. Two places
+ * deliberately depart from the guide, both documented below.
+ */
+
+@import "tailwindcss";
+
+/* Self-hosted: the guide's three faces, no CDN request at runtime. */
+@import "@fontsource/geist-sans/400.css";
+@import "@fontsource/geist-sans/700.css";
+@import "@fontsource/geist-sans/900.css";
+@import "@fontsource/dm-sans/400.css";
+@import "@fontsource/dm-sans/500.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+@theme {
+  /* --- Palette (guide §4) ------------------------------------------- */
+  --color-bg: #0d0d0d;
+  --color-surface: #27272a;
+  --color-accent: #3b82f6;
+  --color-accent-2: #6366f1;
+  --color-text: #f4f4f5;
+
+  /* Derived, not invented: the same hues at reduced presence, for borders
+     and secondary copy that must not compete with the accent. */
+  --color-border: #2f2f33;
+  --color-muted: #8a8a93;
+
+  /*
+   * Status colours extend the palette. Six campaign states and seven
+   * recipient states cannot be told apart with five brand colours.
+   *
+   * The guide's "never more than two accent colours at once" rule is kept by
+   * holding status off the accent channel entirely: these render only as
+   * small dots and text-only badges on --color-surface, never as filled
+   * buttons or large areas. Lightness is matched to #3B82F6 so none of them
+   * shouts louder than the brand accent sitting beside it.
+   */
+  --color-success: #34a853;
+  --color-warn: #d99b28;
+  --color-danger: #e0574a;
+
+  /* --- Typography (guide §5) ---------------------------------------- */
+  --font-heading: "Geist Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "DM Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --text-h1: 3rem; /* 48px */
+  --text-h2: 2.25rem; /* 36px */
+  --text-h3: 1.75rem; /* 28px */
+  --text-h4: 1.375rem; /* 22px */
+  --text-body: 1rem; /* 16px */
+  --text-small: 0.875rem; /* 14px */
+  --text-caption: 0.75rem; /* 12px */
+  --text-code: 0.875rem; /* 14px */
+  --text-inline: 0.8125rem; /* 13px */
+  --text-label: 0.6875rem; /* 11px */
+}
+
+/*
+ * The email canvas is light, and that is deliberate.
+ *
+ * The editor surface and the preview show what lands in a recipient's inbox,
+ * which is a white page in almost every mail client. Painting them brand-dark
+ * would make the editor a WYSIWYG that lies about its output. Brand chrome
+ * frames the canvas; the canvas itself belongs to the email.
+ */
+@theme {
+  --color-canvas: #ffffff;
+  --color-canvas-text: #1a1a1a;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-body);
+    font-size: var(--text-body);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-heading);
+    font-weight: 700;
+    letter-spacing: -0.015em;
+  }
+
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: var(--font-mono);
+  }
+
+  /* Depth comes from elevation and 1px borders — the guide rules out
+     gradients and drop shadows. */
+  ::selection {
+    background-color: var(--color-accent);
+    color: var(--color-text);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+}
+
+/*
+ * The email canvas.
+ *
+ * Tailwind's reset strips the default look of headings, lists, and quotes —
+ * correct for app chrome, wrong here, where the user has to see the shape of
+ * the email they are writing. These rules deliberately echo the shell in
+ * emailDocument.ts, so the canvas resembles the delivered mail.
+ */
+@layer components {
+  .prose-email {
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.6;
+    color: var(--color-canvas-text);
+  }
+
+  .prose-email h1 {
+    font-size: 28px;
+    font-weight: 700;
+    margin: 0 0 12px;
+  }
+  .prose-email h2 {
+    font-size: 22px;
+    font-weight: 700;
+    margin: 24px 0 10px;
+  }
+  .prose-email h3 {
+    font-size: 18px;
+    font-weight: 700;
+    margin: 20px 0 8px;
+  }
+
+  .prose-email p {
+    margin: 0 0 14px;
+  }
+
+  .prose-email ul,
+  .prose-email ol {
+    margin: 0 0 14px;
+    padding-left: 24px;
+  }
+  .prose-email ul {
+    list-style: disc;
+  }
+  .prose-email ol {
+    list-style: decimal;
+  }
+  .prose-email li {
+    margin-bottom: 4px;
+  }
+
+  .prose-email blockquote {
+    margin: 0 0 14px;
+    padding-left: 16px;
+    border-left: 3px solid #d4d4d8;
+    color: #52525b;
+  }
+
+  .prose-email a {
+    color: var(--color-accent);
+    text-decoration: underline;
+  }
+
+  .prose-email hr {
+    margin: 20px 0;
+    border: 0;
+    border-top: 1px solid #d4d4d8;
+  }
+
+  .prose-email img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+  }
+
+  .prose-email img.ProseMirror-selectednode {
+    outline: 2px solid var(--color-accent);
+  }
+
+  /* Merge tags read as one object, so nobody edits half a token away. */
+  .prose-email [data-merge-tag] {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background-color: color-mix(in srgb, var(--color-accent) 14%, transparent);
+    color: #1d4ed8;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  /* The editor's own empty-state hint. */
+  .prose-email p.is-editor-empty:first-child::before {
+    content: "Write your email, or paste from Word or Google Docs.";
+    color: #a1a1aa;
+    float: left;
+    height: 0;
+    pointer-events: none;
+  }
+}

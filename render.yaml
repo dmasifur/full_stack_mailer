@@ -1,9 +1,13 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
 #
-# The application lives in backend/, not at the repository root, so every
-# service sets `rootDir: backend`. Render then finds pyproject.toml, uv.lock and
+# The application lives in app/, not at the repository root, so every service
+# sets `rootDir: app`. Render then finds pyproject.toml, uv.lock and
 # .python-version there, which is what makes the native Python runtime detect
 # the app and use uv.
+#
+# Render prunes the clone to `rootDir` — files outside it are unavailable during
+# the build. That is why the frontend sits at app/frontend rather than at the
+# repository root: the web service has to build it, so it must be inside.
 #
 # Redis is NOT declared here: this project uses Upstash, which is external to
 # Render. Set REDIS_URL manually on the environment group (see below).
@@ -29,8 +33,11 @@ envVarGroups:
         sync: false
       - key: MICROSOFT_CLIENT_SECRET
         sync: false
+      # "common" for multi-tenant. Replace with a tenant GUID to restrict
+      # sign-in to one directory. Not sync: false — it is interpolated straight
+      # into the Graph URLs, so a blank value yields login.microsoftonline.com//.
       - key: MICROSOFT_TENANT_ID
-        sync: false
+        value: common
       # Must match the Azure app registration exactly, e.g.
       # https://<your-web-service>.onrender.com/auth/microsoft/callback
       - key: MICROSOFT_REDIRECT_URI
@@ -48,12 +55,12 @@ envVarGroups:
       - key: ALLOWED_ORIGINS_RAW
         sync: false
 
-      # Leave unset until a frontend exists; the OAuth callback then returns
-      # JSON instead of redirecting.
+      # Where the OAuth callback sends the browser. The frontend is served by
+      # this same service, so it is a path, not an absolute URL.
       - key: FRONTEND_URL
-        sync: false
+        value: /app
 
-      # --- R2 template storage (optional) --------------------------------
+      # --- R2 storage ----------------------------------------------------
       - key: R2_ENDPOINT_URL
         sync: false
       - key: R2_ACCESS_KEY_ID
@@ -62,14 +69,26 @@ envVarGroups:
         sync: false
       - key: R2_BUCKET_NAME
         value: mailer-templates
+      # Public read URL for the bucket — the r2.dev subdomain or a custom
+      # domain, no trailing slash. Required for inline campaign images: a
+      # recipient's mail client fetches them with no credentials. Unset means
+      # image upload returns 503 rather than emitting unreachable links.
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
 
 services:
   - type: web
     name: mailer-api
     runtime: python
-    rootDir: backend
+    rootDir: app
     plan: starter
-    buildCommand: uv sync --locked
+    # The frontend builds into app/static, which this process then serves.
+    # It runs first so a broken frontend fails the deploy before the Python
+    # environment is assembled. Only the web service needs it — the workers
+    # never serve HTTP. `node` and `npm` ship with every native runtime,
+    # including Python.
+    buildCommand: >-
+      cd frontend && npm ci && npm run build && cd .. && uv sync --locked
     # --proxy-headers is required: without it uvicorn reports Render's load
     # balancer as the client address and the OAuth login rate limit collapses
     # into a single shared bucket for every user.
@@ -83,6 +102,11 @@ services:
     preDeployCommand: uv run alembic upgrade head
     envVars:
       - fromGroup: mailer-config
+      # Only this service builds the frontend. Pinned so CI and Render compile
+      # on the same major — Render's default tracks its own schedule, and an
+      # unvalidated build environment is the one that breaks on deploy day.
+      - key: NODE_VERSION
+        value: "24"
       - key: DATABASE_URL
         fromDatabase:
           name: mailer-db
@@ -91,11 +115,11 @@ services:
   - type: worker
     name: mailer-worker
     runtime: python
-    rootDir: backend
+    rootDir: app
     plan: starter
     buildCommand: uv sync --locked
     startCommand: >-
-      uv run celery -A app.workers.celery.celery_app worker
+      uv run celery -A server.workers.celery.celery_app worker
       --loglevel=info --concurrency=4
     envVars:
       - fromGroup: mailer-config
@@ -109,12 +133,12 @@ services:
   - type: worker
     name: mailer-beat
     runtime: python
-    rootDir: backend
+    rootDir: app
     plan: starter
     numInstances: 1
     buildCommand: uv sync --locked
     startCommand: >-
-      uv run celery -A app.workers.celery.celery_app beat --loglevel=info
+      uv run celery -A server.workers.celery.celery_app beat --loglevel=info
     envVars:
       - fromGroup: mailer-config
       - key: DATABASE_URL
