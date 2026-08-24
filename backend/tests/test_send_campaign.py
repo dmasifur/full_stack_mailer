@@ -400,3 +400,50 @@ def test_exhausted_retries_mark_the_campaign_failed(db, alice, make_campaign, gr
 
     db.expire_all()
     assert db.get(Campaign, campaign.id).status == "failed"
+
+
+def test_merge_fields_are_resolved_per_recipient(db, alice, make_campaign, graph):
+    """
+    Each recipient must receive their own name, not the first one's. The
+    substitution happens per send, inside the batch loop.
+    """
+    campaign = make_campaign(alice, recipients=["ada@example.com", "grace@example.com"])
+    campaign.template_body = "<p>Hi {{first_name|there}},</p>"
+
+    names = {"ada@example.com": "Ada", "grace@example.com": "Grace"}
+    for row in db.query(CampaignRecipient).filter(
+        CampaignRecipient.campaign_id == campaign.id
+    ):
+        row.first_name = names[row.email]
+    db.commit()
+
+    send_campaign.send_campaign_task(str(campaign.id))
+
+    bodies = {str(c["recipient_email"]): str(c["html_body"]) for c in graph.calls}
+    assert bodies["ada@example.com"] == "<p>Hi Ada,</p>"
+    assert bodies["grace@example.com"] == "<p>Hi Grace,</p>"
+
+
+def test_merge_field_falls_back_when_the_csv_had_no_name(
+    db, alice, make_campaign, graph
+):
+    """make_campaign leaves first_name unset, which is the common CSV case."""
+    campaign = make_campaign(alice, recipients=["anon@example.com"])
+    campaign.template_body = "<p>Hi {{first_name|there}},</p>"
+    db.commit()
+
+    send_campaign.send_campaign_task(str(campaign.id))
+
+    assert graph.calls[0]["html_body"] == "<p>Hi there,</p>"
+
+
+def test_a_body_with_no_tokens_is_sent_verbatim(db, alice, make_campaign, graph):
+    """A pasted table-based template must reach Graph byte for byte."""
+    body = '<table role="presentation"><tr><td>Newsletter</td></tr></table>'
+    campaign = make_campaign(alice, recipients=["ada@example.com"])
+    campaign.template_body = body
+    db.commit()
+
+    send_campaign.send_campaign_task(str(campaign.id))
+
+    assert graph.calls[0]["html_body"] == body

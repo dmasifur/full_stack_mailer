@@ -21,6 +21,7 @@ from app.services.email_sender import (
     RetryableEmailError,
     send_email_via_graph_api,
 )
+from app.services.merge_fields import render_merge_fields
 from app.services.microsoft_token_service import TokenRefreshError, refresh_access_token
 from app.workers.celery import celery_app
 
@@ -244,13 +245,15 @@ def _send_single_recipient(
     # No "sending" write here: the claim in _get_pending_recipients set it, which
     # is what makes the claim survive the commits below.
 
+    body = render_merge_fields(campaign.template_body, recipient)
+
     try:
         try:
             send_email_via_graph_api(
                 user=user,
                 recipient_email=recipient.email,
                 subject=campaign.subject,
-                html_body=campaign.template_body,
+                html_body=body,
                 from_address=campaign.from_address,
                 cc_emails=cc_emails or None,
             )
@@ -271,7 +274,7 @@ def _send_single_recipient(
                 user=user,
                 recipient_email=recipient.email,
                 subject=campaign.subject,
-                html_body=campaign.template_body,
+                html_body=body,
                 from_address=campaign.from_address,
                 cc_emails=cc_emails or None,
             )

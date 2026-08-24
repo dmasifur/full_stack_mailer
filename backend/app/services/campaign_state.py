@@ -21,6 +21,8 @@ VALID_CAMPAIGN_STATUSES = {
     "failed",
 }
 
+# Mirrored in frontend/src/lib/campaignState.ts so the UI can disable an action
+# the API would refuse. This table stays the authority; change both together.
 VALID_TRANSITIONS: dict[str, set[str]] = {
     # draft → running is a manual start; draft → scheduled defers it.
     "draft": {"scheduled", "running"},

@@ -311,11 +311,15 @@ def update_campaign(
         campaign.subject = body.subject
     if body.template_body is not None:
         campaign.template_body = body.template_body
-    if body.from_address is not None:
+    # model_fields_set, not a None check: for from_address, None is a
+    # meaningful value — "send from my own mailbox" — and is the only way to
+    # undo a shared sender. Testing for None would make that change
+    # impossible to express.
+    if "from_address" in body.model_fields_set:
         campaign.from_address = _validate_from_address(
             db=db,
             user=current_user,
-            from_address=str(body.from_address),
+            from_address=str(body.from_address) if body.from_address else None,
         )
     if body.cc_emails is not None:
         _sync_cc_recipients(

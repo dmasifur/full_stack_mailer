@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     R2_SECRET_ACCESS_KEY: str = ""
     R2_BUCKET_NAME: str = "mailer-templates"
 
+    # Public read URL for the bucket, used only for inline campaign images.
+    # Empty disables image upload — see app/services/asset_storage.py.
+    R2_PUBLIC_BASE_URL: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
     @field_validator("ALLOWED_ORIGINS_RAW")
@@ -64,6 +68,12 @@ class Settings(BaseSettings):
         if v <= 0:
             raise ValueError("ACCESS_TOKEN_TTL_SECONDS must be a positive integer.")
         return v
+
+    @field_validator("R2_PUBLIC_BASE_URL")
+    @classmethod
+    def _no_trailing_slash(cls, v: str) -> str:
+        """Keys are joined with a literal "/", so a trailing slash doubles it."""
+        return v.rstrip("/")
 
     @field_validator("REDIS_SSL_CERT_REQS")
     @classmethod

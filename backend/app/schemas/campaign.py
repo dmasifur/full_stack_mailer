@@ -124,6 +124,24 @@ class TemplateResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class TemplateHtmlCreate(BaseModel):
+    """A template authored in the editor rather than uploaded as a file."""
+
+    name: str = Field(..., max_length=255)
+    html: str = Field(..., min_length=1)
+
+
+class TemplateHtmlUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=255)
+    html: str = Field(..., min_length=1)
+
+
+class TemplateHtmlResponse(BaseModel):
+    """A template's stored markup, for loading back into the editor."""
+
+    html: str
+
+
 class SenderAddressCreate(BaseModel):
     label: str = Field(..., max_length=255)
     email: EmailStr

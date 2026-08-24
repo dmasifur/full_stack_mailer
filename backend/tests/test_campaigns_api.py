@@ -378,3 +378,29 @@ def test_stats_explain_an_under_sending_campaign(client, db, alice, make_campaig
     assert body["sent"] == 1
     assert body["invalid"] == 1
     assert body["pending"] == 1
+
+
+def test_patch_can_clear_from_address(client, alice, make_campaign):
+    """
+    An explicit null reverts to the user's own mailbox.
+
+    None is a meaningful value for this field, so "not provided" and "set to
+    null" have to mean different things — otherwise a campaign that once used a
+    shared sender could never be moved back.
+    """
+    campaign = make_campaign(alice, from_address="alice-send@example.com")
+
+    response = client.patch(f"/campaigns/{campaign.id}", json={"from_address": None})
+
+    assert response.status_code == 200
+    assert response.json()["from_address"] is None
+
+
+def test_patch_without_from_address_leaves_it_alone(client, alice, make_campaign):
+    campaign = make_campaign(alice, from_address="alice-send@example.com")
+
+    response = client.patch(f"/campaigns/{campaign.id}", json={"name": "Renamed"})
+
+    assert response.status_code == 200
+    assert response.json()["from_address"] == "alice-send@example.com"
+    assert response.json()["name"] == "Renamed"

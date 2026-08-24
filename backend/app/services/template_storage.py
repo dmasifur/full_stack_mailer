@@ -1,33 +1,18 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 import uuid
 
-import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-if TYPE_CHECKING:
-    # boto3-stubs is a dev-only dependency — never import it at runtime.
-    from mypy_boto3_s3.client import S3Client
-
 from app.core.config import settings
+from app.services.r2 import get_client
 
 logger = logging.getLogger(__name__)
 
 
 class TemplateStorageError(Exception):
     pass
-
-
-def _get_client() -> S3Client:
-    return boto3.client(
-        "s3",
-        endpoint_url=settings.R2_ENDPOINT_URL,
-        aws_access_key_id=settings.R2_ACCESS_KEY_ID,
-        aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
-        region_name="auto",
-    )
 
 
 def upload_template(html_bytes: bytes, original_filename: str) -> str:
@@ -38,7 +23,7 @@ def upload_template(html_bytes: bytes, original_filename: str) -> str:
     key = f"templates/{uuid.uuid4()}.html"
 
     try:
-        client = _get_client()
+        client = get_client()
         client.put_object(
             Bucket=settings.R2_BUCKET_NAME,
             Key=key,
@@ -60,7 +45,7 @@ def fetch_template(storage_key: str) -> str:
     Fetch template HTML from R2 by storage key. Returns HTML string.
     """
     try:
-        client = _get_client()
+        client = get_client()
         response = client.get_object(
             Bucket=settings.R2_BUCKET_NAME,
             Key=storage_key,
@@ -78,7 +63,7 @@ def delete_template(storage_key: str) -> None:
     Delete a template from R2 by storage key.
     """
     try:
-        client = _get_client()
+        client = get_client()
         client.delete_object(
             Bucket=settings.R2_BUCKET_NAME,
             Key=storage_key,
