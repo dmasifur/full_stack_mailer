@@ -1,12 +1,12 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
 #
-# The application lives in backend/, not at the repository root, so every
-# service sets `rootDir: backend`. Render then finds pyproject.toml, uv.lock and
+# The application lives in app/, not at the repository root, so every service
+# sets `rootDir: app`. Render then finds pyproject.toml, uv.lock and
 # .python-version there, which is what makes the native Python runtime detect
 # the app and use uv.
 #
 # Render prunes the clone to `rootDir` — files outside it are unavailable during
-# the build. That is why the frontend sits at backend/frontend rather than at the
+# the build. That is why the frontend sits at app/frontend rather than at the
 # repository root: the web service has to build it, so it must be inside.
 #
 # Redis is NOT declared here: this project uses Upstash, which is external to
@@ -77,9 +77,9 @@ services:
   - type: web
     name: mailer-api
     runtime: python
-    rootDir: backend
+    rootDir: app
     plan: starter
-    # The frontend builds into backend/static, which this process then serves.
+    # The frontend builds into app/static, which this process then serves.
     # It runs first so a broken frontend fails the deploy before the Python
     # environment is assembled. Only the web service needs it — the workers
     # never serve HTTP. `node` and `npm` ship with every native runtime,
@@ -107,11 +107,11 @@ services:
   - type: worker
     name: mailer-worker
     runtime: python
-    rootDir: backend
+    rootDir: app
     plan: starter
     buildCommand: uv sync --locked
     startCommand: >-
-      uv run celery -A app.workers.celery.celery_app worker
+      uv run celery -A server.workers.celery.celery_app worker
       --loglevel=info --concurrency=4
     envVars:
       - fromGroup: mailer-config
@@ -125,12 +125,12 @@ services:
   - type: worker
     name: mailer-beat
     runtime: python
-    rootDir: backend
+    rootDir: app
     plan: starter
     numInstances: 1
     buildCommand: uv sync --locked
     startCommand: >-
-      uv run celery -A app.workers.celery.celery_app beat --loglevel=info
+      uv run celery -A server.workers.celery.celery_app beat --loglevel=info
     envVars:
       - fromGroup: mailer-config
       - key: DATABASE_URL

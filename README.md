@@ -5,7 +5,7 @@ stores their tokens encrypted, imports recipient lists from CSV, validates the a
 sends campaigns through the Microsoft Graph API — from the user's own mailbox or from a shared
 mailbox they have rights to.
 
-A React web client lives in `backend/frontend/` and is served by the API process itself, at `/app`.
+A React web client lives in `app/frontend/` and is served by the API process itself, at `/app`.
 Campaign bodies are written either in a rich-text editor — which handles pasted Word and Google
 Docs content, uploading inline images to R2 — or as raw email HTML, kept byte for byte.
 
@@ -18,7 +18,7 @@ Docs content, uploading inline images to R2 — or as raw email HTML, kept byte 
 
 ## Prerequisites
 
-- **Python 3.14** (pinned in `backend/.python-version`)
+- **Python 3.14** (pinned in `app/.python-version`)
 - **[uv](https://docs.astral.sh/uv/)** for dependency management
 - **PostgreSQL** — plus permission to `CREATE DATABASE` if you want to run the tests
 - **Redis** — Celery broker and rate-limit storage
@@ -33,7 +33,7 @@ Docs content, uploading inline images to R2 — or as raw email HTML, kept byte 
 ## Setup
 
 ```bash
-cd backend
+cd app
 
 uv sync                         # install dependencies into .venv
 cp .env.example .env            # then fill in the secrets below
@@ -62,15 +62,15 @@ full configuration reference lives in
 
 ## Running
 
-Four processes, each in its own shell. The first three from `backend/`:
+Four processes, each in its own shell. The first three from `app/`:
 
 ```bash
 uv run uvicorn main:app --reload --port 8000
-uv run celery -A app.workers.celery.celery_app worker --loglevel=info --concurrency=4
-uv run celery -A app.workers.celery.celery_app beat --loglevel=info
+uv run celery -A server.workers.celery.celery_app worker --loglevel=info --concurrency=4
+uv run celery -A server.workers.celery.celery_app beat --loglevel=info
 ```
 
-And the frontend, from `backend/frontend/`:
+And the frontend, from `app/frontend/`:
 
 ```bash
 npm run dev                     # http://localhost:5173
@@ -81,7 +81,7 @@ the session cookie behaves exactly as it does in production. Open the app at
 **http://localhost:5173/app**.
 
 To serve the built frontend from the API instead — which is what production does — run
-`npm run build` and open http://localhost:8000/app. The build writes to `backend/static/`.
+`npm run build` and open http://localhost:8000/app. The build writes to `app/static/`.
 
 Beat is not optional if you want scheduling to survive a Redis restart — see
 [the reconciler decision](docs/architecture.md#5-the-reconciler-makes-the-database-the-source-of-truth).
@@ -96,7 +96,7 @@ open http://localhost:8000/docs       # interactive OpenAPI docs
 ## Tests
 
 ```bash
-cd backend
+cd app
 uv run pytest
 ```
 
@@ -120,7 +120,7 @@ connection mid-run. A local server avoids this; CI uses a container for the same
 ### Frontend
 
 ```bash
-cd backend/frontend
+cd app/frontend
 npm run typecheck && npm run lint && npm test
 ```
 
@@ -136,14 +136,14 @@ uv run ruff format .
 uv run mypy
 ```
 
-mypy runs in **strict** mode over `app/`, `main.py`, and `tests/`, with the pydantic plugin.
+mypy runs in **strict** mode over `server/`, `main.py`, and `tests/`, with the pydantic plugin.
 Two deliberate relaxations, both documented inline in `pyproject.toml`:
 
 - `no_implicit_reexport` is off. It polices a module's import surface, which is a contract for
   a published library but not for an application — here its only real effect was to reject
   `monkeypatch.setattr(module.settings, ...)`, which is the correct way to write those tests.
 - Tests are exempt from *signature* requirements only. Their bodies, assertions, and every call
-  they make into `app/` are still fully checked.
+  they make into `server/` are still fully checked.
 
 Alembic revisions are excluded — they are generated, and their module names are hashes.
 `warn_unused_ignores` is on, so a `# type: ignore` that stops being necessary becomes an error
@@ -259,11 +259,12 @@ another user's ids return `404`.
 ```
 docs/                      architecture.md, deploy.md
 render.yaml                Render Blueprint — all three services
-backend/
+app/
   main.py                  FastAPI app; router and middleware wiring
   Procfile                 web / worker / beat process definitions
   migrations/              Alembic revisions (one linear chain)
-  app/
+  server/                  The Python package — named for the process it runs,
+                           since app/ now holds the client as well
     api/                   Route handlers, one module per resource
     core/                  Settings, logging, rate limiter
     db/                    Engine, session factory, declarative base
@@ -272,7 +273,7 @@ backend/
     services/              Business logic — sending, state machine, CSV import,
                            token encryption, R2 storage
     workers/               Celery app and tasks
-  frontend/                React SPA. Inside backend/ because Render prunes the
+  frontend/                React SPA. Inside app/ because Render prunes the
                            clone to the service's root directory, and the web
                            service is what builds it.
     src/

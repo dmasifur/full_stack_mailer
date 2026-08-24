@@ -15,7 +15,7 @@ encrypted, imports recipient lists from CSV, validates the addresses, and sends 
 through the Microsoft Graph API — from the user's own mailbox or a shared mailbox they hold
 rights to.
 
-A React single-page app in `backend/frontend/` is served by the web process itself, under `/app`. It
+A React single-page app in `app/frontend/` is served by the web process itself, under `/app`. It
 covers everything the API exposes, and is built around a campaign body editor with two authoring
 modes — see decision 15.
 
@@ -89,7 +89,7 @@ stateDiagram-v2
 decisions below: anything that lets a campaign reach `completed` prematurely is unrecoverable
 data loss from the operator's point of view.
 
-Transitions live in exactly one place, `app/services/campaign_state.py`. Nothing else assigns
+Transitions live in exactly one place, `server/services/campaign_state.py`. Nothing else assigns
 to `campaign.status` except the two recovery paths that deliberately revert one
 (`_transition_and_dispatch` on broker failure, `_mark_failed` on unrecoverable error).
 
@@ -156,7 +156,7 @@ Each entry states the decision, the failure it prevents, and where it lives.
 
 ### 1. The batch claim is a single atomic UPDATE
 
-`app/workers/send_campaign.py::_get_pending_recipients`
+`server/workers/send_campaign.py::_get_pending_recipients`
 
 Claiming a batch flips `status` to `'sending'` **inside the same statement** that selects it:
 
@@ -178,7 +178,7 @@ partial because `failed` rows repeat legitimately across retries.
 
 ### 2. Resume goes straight to `running`, clearing the schedule
 
-`app/api/campaigns.py::resume_campaign`
+`server/api/campaigns.py::resume_campaign`
 
 Resuming into `scheduled` while leaving a past `scheduled_at` in place meant the beat
 reconciler matched the campaign on its next tick and dispatched a *second* task alongside the
@@ -187,7 +187,7 @@ decision 1 defends against.
 
 ### 3. `/start` and `/schedule` refuse a campaign that cannot send
 
-`app/api/campaigns.py::_assert_sendable`
+`server/api/campaigns.py::_assert_sendable`
 
 Because the worker only sees `pending` + `dns_valid`, a campaign whose recipients are still at
 `pending_validation` finds nothing to do, exits its loop, and transitions itself to
@@ -196,7 +196,7 @@ check is in the API because that is the last point at which a human can be told.
 
 ### 4. State is committed before dispatch, and reverted if dispatch fails
 
-`app/api/campaigns.py::_transition_and_dispatch`
+`server/api/campaigns.py::_transition_and_dispatch`
 
 `running` has no transition back to `draft` or `scheduled`. A campaign committed as `running`
 with no task behind it is stuck short of an operator pausing and resuming it. So a failed
@@ -204,7 +204,7 @@ with no task behind it is stuck short of an operator pausing and resuming it. So
 
 ### 5. The reconciler makes the database the source of truth
 
-`app/workers/reconcile_campaigns.py`
+`server/workers/reconcile_campaigns.py`
 
 `apply_async(eta=...)` parks a task inside Redis. A flush, purge, or broker restart loses it
 silently, and the campaign sits past its scheduled time with nothing to run it. The beat tick
@@ -215,7 +215,7 @@ by an enqueue that never landed.
 
 ### 6. Stale `sending` rows are reclaimed at task start
 
-`app/workers/send_campaign.py::_release_stale_sending`
+`server/workers/send_campaign.py::_release_stale_sending`
 
 A worker killed mid-send leaves rows at `sending`, which match neither the pending filter nor
 `sent` — they would be skipped forever. Reclaimed after 30 minutes, long enough not to race a
@@ -223,7 +223,7 @@ live worker on a slow Graph call.
 
 ### 7. OAuth state is bound to the browser with a cookie
 
-`app/api/auth.py`
+`server/api/auth.py`
 
 A signed `state` proves only that *this server* minted it — not that it minted it for *this
 browser*. Without binding, an attacker mints their own state, pairs it with their own
@@ -233,7 +233,7 @@ attacker's account. `/login` sets the raw state in a short-lived `HttpOnly` cook
 
 ### 8. Error responses from third parties are never logged verbatim
 
-`app/api/auth.py`, `app/services/email_sender.py`, `app/services/microsoft_token_service.py`
+`server/api/auth.py`, `server/services/email_sender.py`, `server/services/microsoft_token_service.py`
 
 An OAuth error echoes submitted parameters including the authorization code. A Graph send
 error echoes the submitted message — campaign HTML and the recipient address. Only status
@@ -242,7 +242,7 @@ addresses are logged by id, not by address; `email_logs` is the deliberate audit
 
 ### 9. Rate limits are shared, and degrade rather than fail
 
-`app/core/rate_limit.py`
+`server/core/rate_limit.py`
 
 Counters live in Redis, because in-process counters are per-worker and reset on restart. But
 an unreachable Redis makes slowapi raise inside the middleware, turning *every* request into a
@@ -254,7 +254,7 @@ must run with `--proxy-headers` or every caller shares one bucket.
 
 ### 10. Redis TLS verifies certificates
 
-`app/core/config.py`, `app/workers/celery.py`
+`server/core/config.py`, `server/workers/celery.py`
 
 redis-py 7.x already defaults to `cert_reqs='required'` with hostname checking; the previous
 explicit `CERT_NONE` was an active downgrade of a safe default. Options are sent only for
@@ -266,7 +266,7 @@ with it, because Python refuses to combine hostname checking with `CERT_NONE`.
 
 ### 11. Uploads are capped while streaming
 
-`app/api/campaigns.py::_stream_to_disk`
+`server/api/campaigns.py::_stream_to_disk`
 
 `UploadFile` does not know the length up front and `Content-Length` is caller-controlled, so
 the cap is enforced byte-by-byte as the file is written. Staging uses a per-request
@@ -275,7 +275,7 @@ survives a crash.
 
 ### 12. Ids are `uuid.UUID`, not `str`
 
-`app/models/base.py`
+`server/models/base.py`
 
 The column is `UUID(as_uuid=True)`, so every read returns a real `UUID`. Annotating it `str`
 made ids look like strings to the type checker while behaving as UUIDs at runtime — the
@@ -283,7 +283,7 @@ mismatch that defensive `str(...)` calls were papering over.
 
 ### 13. Templates are shared across all users
 
-`app/api/templates.py` — **accepted risk, deliberate**
+`server/api/templates.py` — **accepted risk, deliberate**
 
 Every authenticated user can list and use every template; only the uploader can delete one.
 This is the single resource in the system that is not tenant-scoped. Revisit if the product
@@ -291,7 +291,7 @@ gains untrusted or multi-customer tenants.
 
 ### 14. Send throughput is capped, knowingly
 
-`app/workers/send_campaign.py` — **accepted risk, deliberate**
+`server/workers/send_campaign.py` — **accepted risk, deliberate**
 
 The worker sleeps 5 seconds between sends inside the task, so one campaign occupies one worker
 slot for its whole duration — at `--concurrency=4`, four concurrent campaigns. Adequate at
@@ -300,7 +300,7 @@ current volume. The fix, when it stops being adequate, is to chain per-batch tas
 
 ### 15. The editor's two modes are exclusive, not two views
 
-`backend/frontend/src/components/editor/` — the load-bearing frontend decision
+`app/frontend/src/components/editor/` — the load-bearing frontend decision
 
 Email HTML and rich-text HTML are different languages. A WYSIWYG parses pasted markup into its own
 schema and re-serialises it; a table-based template built for Outlook goes in and comes out
@@ -318,7 +318,7 @@ source is still a fragment.
 
 ### 16. Inline images are uploaded, never embedded
 
-`backend/app/api/assets.py`, `backend/frontend/src/components/editor/ImageUpload.ts`
+`app/server/api/assets.py`, `app/frontend/src/components/editor/ImageUpload.ts`
 
 Word and Google Docs carry pasted images as `data:` URIs. Left alone they would be inlined into
 every message — and Gmail clips a message over 102 KB, so a single base64 image can truncate the
@@ -335,7 +335,7 @@ delivered keeps pointing at its images.
 
 ### 17. The body is not sanitised; the preview is isolated
 
-`backend/frontend/src/components/editor/PreviewPane.tsx`
+`app/frontend/src/components/editor/PreviewPane.tsx`
 
 Sanitising email HTML hard enough to be safe also strips the tables and inline styles that make it
 render in Outlook — so `template_body` is stored exactly as written. The preview renders it in an
@@ -344,7 +344,7 @@ and loses nothing, which server-side sanitising cannot claim.
 
 ### 18. The SPA lives under `/app`, and the API keeps the root
 
-`backend/app/spa.py`
+`app/server/spa.py`
 
 Same-origin, so the session cookie stays `SameSite=lax` and production needs no CORS at all. But
 the API already owns the root namespace: `/campaigns` is the campaign list *endpoint*, so the
@@ -376,12 +376,12 @@ ORM. Tenant scoping is enforced by `user_id` filters in the API and asserted in
 `tests/test_isolation.py` — templates excepted, per decision 13.
 
 Migrations are a single linear chain; there are no branched heads. Constraint names come from
-`app/db/base.py`'s naming convention, so autogenerated downgrades are runnable.
+`server/db/base.py`'s naming convention, so autogenerated downgrades are runnable.
 
 ## Conventions
 
-- **Business logic lives in `app/services/`**, not in route handlers. Handlers validate, call a
+- **Business logic lives in `server/services/`**, not in route handlers. Handlers validate, call a
   service, and shape the response.
-- **`app/workers/` never decides policy.** It reads state and acts; the API decides.
+- **`server/workers/` never decides policy.** It reads state and acts; the API decides.
 - **mypy runs strict.** `pyproject.toml` documents the two deliberate relaxations.
 - **Comments explain why, not what.** Anything needing a paragraph belongs in this file.

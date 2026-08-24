@@ -17,7 +17,7 @@ Three processes share one Postgres database and one Redis instance:
 | **worker** | `celery ... worker` | Sends campaigns, validates recipient domains. |
 | **beat** | `celery ... beat` | Ticks every 60s to run the reconciler. |
 
-`backend/Procfile` carries the flags production needs:
+`app/Procfile` carries the flags production needs:
 
 ```
 web:    uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips="*"
@@ -33,13 +33,13 @@ beat:   celery -A app.workers.celery.celery_app beat --loglevel=info
 ## The app lives in a subdirectory
 
 Buildpacks look for `pyproject.toml`, `uv.lock`, `.python-version`, and `Procfile` at the **app
-root**. All four are in `backend/`, so detection fails unless the platform is pointed at the
-subdirectory. Every service in `render.yaml` sets `rootDir: backend` for this reason.
+root**. All four are in `app/`, so detection fails unless the platform is pointed at the
+subdirectory. Every service in `render.yaml` sets `rootDir: app` for this reason.
 
 Render's native Python runtime defaults to 3.14 and supports `uv`, so no Dockerfile is needed —
 and no `requirements.txt`, which would conflict with `uv.lock`.
 
-**This is also why the frontend sits at `backend/frontend/`.** Render prunes the clone to the
+**This is also why the frontend sits at `app/frontend/`.** Render prunes the clone to the
 service's root directory — [files outside it are not available at build time or at
 runtime](https://render.com/docs/monorepo-support#setting-a-root-directory). The web service is
 what builds the SPA, so the SPA has to be inside the directory the web service can see. A
@@ -51,7 +51,7 @@ run `npm ci` from a Python service's build command.
 
 Deploying elsewhere? Same principle. On Heroku that means
 [`heroku-buildpack-monorepo`](https://github.com/lstoll/heroku-buildpack-monorepo) with
-`APP_BASE=backend`; Heroku's Python buildpack also ships 3.14 and `uv`.
+`APP_BASE=app`; Heroku's Python buildpack also ships 3.14 and `uv`.
 
 ---
 
@@ -121,7 +121,7 @@ Render shell instead.
 
 ## Configuration reference
 
-All settings are read from the environment (see `app/core/config.py`). Names are
+All settings are read from the environment (see `server/core/config.py`). Names are
 case-sensitive.
 
 | Variable | Required | Default | Purpose |
@@ -182,7 +182,7 @@ rather than storing an object nobody can reach.
 ## Production checklist
 
 - [ ] **The frontend is built.** The web service's `buildCommand` runs `npm ci && npm run build`
-      in `backend/frontend/` before `uv sync`, writing to `backend/static/`. Without it the API
+      in `app/frontend/` before `uv sync`, writing to `app/static/`. Without it the API
       starts fine but `/app` returns `404`.
 - [ ] **`R2_PUBLIC_BASE_URL` is set and publicly readable**, if campaigns will contain images.
       Check it with `curl -I` from outside any session — a link that 403s in an inbox shows as a
