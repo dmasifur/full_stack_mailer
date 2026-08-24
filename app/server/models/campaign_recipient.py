@@ -57,8 +57,6 @@ class CampaignRecipient(BaseModel):
         nullable=True,
     )
 
-    # pending_validation → pending (dns ok) or invalid (dns failed)
-    # pending → sending → sent / failed
     status: Mapped[str] = mapped_column(
         String(50),
         default="pending_validation",

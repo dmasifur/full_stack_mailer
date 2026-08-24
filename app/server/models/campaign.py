@@ -19,11 +19,11 @@ class Campaign(BaseModel):
     template_id: Mapped[str | None] = mapped_column(
         ForeignKey("templates.id"), nullable=True
     )
-    # Sender address. None means send from the authenticated user's own mailbox.
+    # None means send from the authenticated user's own mailbox.
     from_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(
         String(50),
-        default="draft",  # draft /scheduled /running /paused /completed /failed
+        default="draft",
         nullable=False,
         index=True,
     )

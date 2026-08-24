@@ -19,7 +19,6 @@ class SenderAddress(BaseModel):
         ForeignKey("users.id"), nullable=False, index=True
     )
 
-    # Display label e.g. "Marketing", "Support"
     label: Mapped[str] = mapped_column(String(255), nullable=False)
 
     email: Mapped[str] = mapped_column(String(255), nullable=False)

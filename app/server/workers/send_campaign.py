@@ -43,8 +43,6 @@ STARTABLE_STATUSES = frozenset({"draft", "scheduled", "running"})
 
 
 @celery_app.task(
-    # Explicit, like the other two tasks: an auto-derived name is the module
-    # path, which would tie the queue's contents to a directory name.
     name="send_campaign_task",
     bind=True,
     autoretry_for=(RetryableEmailError,),

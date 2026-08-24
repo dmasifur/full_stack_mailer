@@ -114,9 +114,6 @@ def delete_sender_address(
     logger.info("Sender address deleted. id=%s user=%s", address_id, current_user.id)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
 def _get_or_404(*, db: Session, address_id: str, user_id: str) -> SenderAddress:
     sender = (
         db.query(SenderAddress)
