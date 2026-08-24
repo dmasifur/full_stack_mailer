@@ -45,8 +45,10 @@ celerybeat.pid
 # Ruff
 .ruff_cache/
 
-# Agent-local settings
-.claude/settings.local.json
+# Agent-local notes and settings — never committed
+.claude/
+CLAUDE.md
+AUDIT.md
 
 # Transient CSV upload staging (see app/api/campaigns.py)
 uploads/

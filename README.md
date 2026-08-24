@@ -5,8 +5,9 @@ stores their tokens encrypted, imports recipient lists from CSV, validates the a
 sends campaigns through the Microsoft Graph API — from the user's own mailbox or from a shared
 mailbox they have rights to.
 
-> **This repository is backend-only.** Despite the name, there is no frontend here. The API is
-> designed to be driven by a separate client, or directly via the OpenAPI docs at `/docs`.
+A React web client lives in `backend/frontend/` and is served by the API process itself, at `/app`.
+Campaign bodies are written either in a rich-text editor — which handles pasted Word and Google
+Docs content, uploading inline images to R2 — or as raw email HTML, kept byte for byte.
 
 | | |
 | --- | --- |
@@ -24,7 +25,10 @@ mailbox they have rights to.
 - **An Azure app registration** with these delegated Microsoft Graph scopes:
   `offline_access`, `openid`, `profile`, `email`, `User.Read`, `Mail.Send`, `Mail.Send.Shared`
   — and a redirect URI matching `MICROSOFT_REDIRECT_URI` exactly
-- **A Cloudflare R2 bucket** — only if you plan to use uploaded HTML templates
+- **A Cloudflare R2 bucket** — for HTML templates and for inline campaign images. Images also
+  need the bucket's public read URL in `R2_PUBLIC_BASE_URL`: a recipient's mail client fetches
+  them anonymously and cannot sign a request.
+- **Node 20+** — to build the frontend
 
 ## Setup
 
@@ -34,6 +38,9 @@ cd backend
 uv sync                         # install dependencies into .venv
 cp .env.example .env            # then fill in the secrets below
 uv run alembic upgrade head     # create the schema
+
+cd frontend
+npm install
 ```
 
 `.env.example` is a working template. Values are read verbatim, so keep integers literal and
@@ -55,13 +62,26 @@ full configuration reference lives in
 
 ## Running
 
-Three processes, each in its own shell:
+Four processes, each in its own shell. The first three from `backend/`:
 
 ```bash
 uv run uvicorn main:app --reload --port 8000
 uv run celery -A app.workers.celery.celery_app worker --loglevel=info --concurrency=4
 uv run celery -A app.workers.celery.celery_app beat --loglevel=info
 ```
+
+And the frontend, from `backend/frontend/`:
+
+```bash
+npm run dev                     # http://localhost:5173
+```
+
+Vite proxies every API path to port 8000, so the browser stays on one origin in development and
+the session cookie behaves exactly as it does in production. Open the app at
+**http://localhost:5173/app**.
+
+To serve the built frontend from the API instead — which is what production does — run
+`npm run build` and open http://localhost:8000/app. The build writes to `backend/static/`.
 
 Beat is not optional if you want scheduling to survive a Redis restart — see
 [the reconciler decision](docs/architecture.md#5-the-reconciler-makes-the-database-the-source-of-truth).
@@ -80,7 +100,7 @@ cd backend
 uv run pytest
 ```
 
-152 tests, covering the state machine, tenant isolation, OAuth state binding, the send worker's
+Covering the state machine, tenant isolation, OAuth state binding, the send worker's
 concurrency and failure paths, the scheduling reconciler, CSV import and its limits, and the
 health endpoint. Graph is stubbed; no email is ever sent.
 
@@ -96,6 +116,17 @@ The suite needs a **real Postgres**, and manages its own database:
 
 Running against a remote Postgres can produce spurious failures if the provider drops the
 connection mid-run. A local server avoids this; CI uses a container for the same reason.
+
+### Frontend
+
+```bash
+cd backend/frontend
+npm run typecheck && npm run lint && npm test
+```
+
+TypeScript runs with `strict`, plus `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes` —
+the same posture as mypy's strict mode on the backend. Tests cover the pure parts of the editor:
+the email-document shell, clipboard cleanup, authoring-mode detection, and merge-tag preview.
 
 ## Lint and types
 
@@ -128,6 +159,10 @@ CI runs all of the above plus `uv build`, against Postgres and Redis service con
 3. **Upload a template** *(optional)* — `POST /templates?name=Newsletter` with compiled HTML.
 4. **Create the campaign** — `POST /campaigns` with `name`, `subject`, `template_body`, and
    optionally `template_id`, `from_address`, `cc_emails`.
+
+   `template_body` may contain merge tokens: `{{first_name}}`, `{{last_name}}`, `{{email}}`,
+   each optionally with a fallback as `{{first_name|there}}`. They are substituted per recipient
+   at send time, and every substituted value is HTML-escaped.
 5. **Upload recipients** — `POST /campaigns/{id}/recipients/upload` with a CSV:
 
    ```csv
@@ -180,8 +215,17 @@ Authentication is an `HttpOnly` cookie named `access_token`, set by the OAuth ca
 | Method | Path | Notes |
 | --- | --- | --- |
 | `POST` | `/templates?name=<name>` | Multipart `file` upload. `.html` only, 5 MB max. |
+| `POST` | `/templates/html` | JSON `{name, html}` — what the editor saves. |
 | `GET` | `/templates` | All templates, newest first. |
+| `GET` | `/templates/{template_id}/html` | The stored markup, for loading into the editor. |
+| `PUT` | `/templates/{template_id}/html` | JSON `{html, name?}`. Uploader only. Writes a new R2 object and drops the old one. |
 | `DELETE` | `/templates/{template_id}` | Uploader only. Also removes the R2 object. |
+
+### Assets
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/assets` | Multipart `file`. Inline campaign images. PNG/JPEG/GIF/WEBP, 2 MB max, identified by magic bytes rather than by the declared type. Returns a public URL. `503` if `R2_PUBLIC_BASE_URL` is unset. |
 
 ### Campaigns
 
@@ -228,5 +272,17 @@ backend/
     services/              Business logic — sending, state machine, CSV import,
                            token encryption, R2 storage
     workers/               Celery app and tasks
+  frontend/                React SPA. Inside backend/ because Render prunes the
+                           clone to the service's root directory, and the web
+                           service is what builds it.
+    src/
+      api/                 Fetch client, typed responses, TanStack Query hooks
+      components/
+        editor/            The campaign body editor — compose, source, preview,
+                           image upload, merge tags
+        ui/                Shared primitives, built on the brand tokens
+      lib/                 Campaign state machine mirror, small helpers
+      styles/theme.css     Brand palette and typography as CSS custom properties
+  static/                  Built frontend, served at /app (git-ignored)
   tests/                   pytest suite (needs a real Postgres)
 ```

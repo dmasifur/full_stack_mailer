@@ -39,6 +39,16 @@ subdirectory. Every service in `render.yaml` sets `rootDir: backend` for this re
 Render's native Python runtime defaults to 3.14 and supports `uv`, so no Dockerfile is needed —
 and no `requirements.txt`, which would conflict with `uv.lock`.
 
+**This is also why the frontend sits at `backend/frontend/`.** Render prunes the clone to the
+service's root directory — [files outside it are not available at build time or at
+runtime](https://render.com/docs/monorepo-support#setting-a-root-directory). The web service is
+what builds the SPA, so the SPA has to be inside the directory the web service can see. A
+`frontend/` at the repository root would fail the build with `cd: ../frontend: No such file or
+directory`, and frontend-only commits would not trigger a redeploy at all.
+
+`node` and `npm` ship with every native runtime, Python included, so nothing extra is needed to
+run `npm ci` from a Python service's build command.
+
 Deploying elsewhere? Same principle. On Heroku that means
 [`heroku-buildpack-monorepo`](https://github.com/lstoll/heroku-buildpack-monorepo) with
 `APP_BASE=backend`; Heroku's Python buildpack also ships 3.14 and `uv`.
@@ -128,18 +138,57 @@ case-sensitive.
 | `SECRET_KEY` | **yes** | — | Signs session tokens and the OAuth `state`. |
 | `ACCESS_TOKEN_TTL_SECONDS` | no | `28800` (8h) | Session lifetime; also drives the cookie `max_age`. |
 | `ALLOWED_ORIGINS_RAW` | no | `http://localhost:3000` | Comma-separated CORS origins. `*` is rejected at startup. |
-| `FRONTEND_URL` | no | `""` | Post-login redirect target. Empty → the callback returns JSON. |
+| `FRONTEND_URL` | no | `""` | Post-login redirect target. `/app` for the bundled frontend. Empty → the callback returns JSON. |
 | `MAX_UPLOAD_BYTES` | no | `10485760` | CSV upload cap. Exceeding it returns `413`. |
 | `REDIS_SSL_CERT_REQS` | no | `required` | `required`, `optional`, or `none`. |
 | `R2_ENDPOINT_URL` | no | `""` | `https://<account_id>.r2.cloudflarestorage.com` |
 | `R2_ACCESS_KEY_ID` | no | `""` | R2 credential. |
 | `R2_SECRET_ACCESS_KEY` | no | `""` | R2 credential. |
-| `R2_BUCKET_NAME` | no | `mailer-templates` | Bucket holding template HTML. |
+| `R2_BUCKET_NAME` | no | `mailer-templates` | Bucket holding template HTML and inline images. |
+| `R2_PUBLIC_BASE_URL` | for images | `""` | Public read URL for the bucket, no trailing slash. Required to upload inline campaign images. |
+
+---
+
+## Cloudflare R2: making images public
+
+Template HTML is fetched by the API, which holds credentials. Inline campaign images are not:
+they are fetched by **the recipient's mail client**, which has no session and cannot sign a
+request. The bucket therefore needs a public read URL, and `R2_PUBLIC_BASE_URL` must point at it.
+
+1. In the Cloudflare dashboard, open the bucket → **Settings** → **Public access**.
+2. Either enable the **r2.dev subdomain** — quickest, and rate-limited by Cloudflare — or connect
+   a **custom domain**, which has no such limit.
+3. Set `R2_PUBLIC_BASE_URL` to that origin, with no trailing slash and no bucket path:
+
+   ```
+   R2_PUBLIC_BASE_URL=https://pub-<hash>.r2.dev
+   ```
+
+4. Verify from outside any session:
+
+   ```bash
+   curl -I "$R2_PUBLIC_BASE_URL/assets/<any-uploaded-key>"   # expect 200
+   ```
+
+A custom domain on the same root as the sending address is worth the extra step: images served
+from a domain unrelated to the sender are more likely to be treated as tracking pixels and
+blocked.
+
+Leaving `R2_PUBLIC_BASE_URL` unset is safe — `POST /assets` returns `503` with an explanation
+rather than storing an object nobody can reach.
 
 ---
 
 ## Production checklist
 
+- [ ] **The frontend is built.** The web service's `buildCommand` runs `npm ci && npm run build`
+      in `backend/frontend/` before `uv sync`, writing to `backend/static/`. Without it the API
+      starts fine but `/app` returns `404`.
+- [ ] **`R2_PUBLIC_BASE_URL` is set and publicly readable**, if campaigns will contain images.
+      Check it with `curl -I` from outside any session — a link that 403s in an inbox shows as a
+      broken image to every recipient.
+- [ ] **`FRONTEND_URL` is `/app`**, so the OAuth callback lands on the app rather than returning
+      JSON.
 - [ ] **`APP_ENV` is not `development`.** This is what makes the session and OAuth state
       cookies `Secure`, and stops `/health` disclosing database hostnames to unauthenticated
       callers. Set to `production` in `render.yaml`.

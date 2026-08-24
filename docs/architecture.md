@@ -15,16 +15,18 @@ encrypted, imports recipient lists from CSV, validates the addresses, and sends 
 through the Microsoft Graph API — from the user's own mailbox or a shared mailbox they hold
 rights to.
 
-It is a backend only. There is no frontend in this repository.
+A React single-page app in `backend/frontend/` is served by the web process itself, under `/app`. It
+covers everything the API exposes, and is built around a campaign body editor with two authoring
+modes — see decision 15.
 
 ## 2. System diagram
 
 ```mermaid
 graph TB
-    Client["API client<br/><i>cookie or Bearer auth</i>"]
+    Client["Browser<br/><i>SPA at /app, cookie auth</i>"]
 
     subgraph Processes["Application processes"]
-        Web["<b>web</b><br/>FastAPI + uvicorn<br/><i>owns all state changes</i>"]
+        Web["<b>web</b><br/>FastAPI + uvicorn<br/><i>owns all state changes</i><br/><i>also serves the SPA</i>"]
         Worker["<b>worker</b><br/>Celery<br/><i>sends mail, validates domains</i>"]
         Beat["<b>beat</b><br/>Celery beat<br/><i>60s reconciler tick</i>"]
     end
@@ -43,6 +45,8 @@ graph TB
     Web -->|enqueue| Redis
     Web -->|rate-limit counters| Redis
     Web -->|fetch/store templates| R2
+    Web -->|store inline images| R2
+    R2 -.->|public image URLs| Inbox["Recipient's mail client"]
     Web -.->|OAuth code exchange| Graph
 
     Redis -->|dequeue| Worker
@@ -293,6 +297,64 @@ The worker sleeps 5 seconds between sends inside the task, so one campaign occup
 slot for its whole duration — at `--concurrency=4`, four concurrent campaigns. Adequate at
 current volume. The fix, when it stops being adequate, is to chain per-batch tasks with
 `countdown=` rather than blocking.
+
+### 15. The editor's two modes are exclusive, not two views
+
+`backend/frontend/src/components/editor/` — the load-bearing frontend decision
+
+Email HTML and rich-text HTML are different languages. A WYSIWYG parses pasted markup into its own
+schema and re-serialises it; a table-based template built for Outlook goes in and comes out
+restructured. So a campaign is authored in one mode or the other, not both:
+
+- A body that is a **full HTML document** — `<html>`, `<body>`, or a top-level `<table>` — belongs
+  to the source editor and is stored byte for byte. Compose is locked for that campaign, and the
+  UI says why.
+- A **composed** body is wrapped at save time in a minimal email shell: a centred single-column
+  table with inline styles, because TipTap emits `<p>` and `<h1>`, which mail clients disagree
+  about. The shell is recognisable on reopen, so a composed campaign returns to compose.
+
+Compose → source is offered once, with a warning. Source → compose is offered only while the
+source is still a fragment.
+
+### 16. Inline images are uploaded, never embedded
+
+`backend/app/api/assets.py`, `backend/frontend/src/components/editor/ImageUpload.ts`
+
+Word and Google Docs carry pasted images as `data:` URIs. Left alone they would be inlined into
+every message — and Gmail clips a message over 102 KB, so a single base64 image can truncate the
+email. Every image, however it arrives (clipboard file, `data:` URI in pasted HTML, drag-and-drop,
+toolbar), is uploaded to R2 first and referenced by public URL.
+
+That URL has to be **publicly readable**: it is fetched by the recipient's mail client, which has
+no session and cannot sign a request. Hence `R2_PUBLIC_BASE_URL`, and hence `POST /assets`
+returning `503` when it is unset rather than emitting links that resolve to nothing.
+
+Uploads identify the format from the file's **magic bytes**, not its `Content-Type` or extension —
+both are caller-supplied. Asset objects are never deleted: an email that has already been
+delivered keeps pointing at its images.
+
+### 17. The body is not sanitised; the preview is isolated
+
+`backend/frontend/src/components/editor/PreviewPane.tsx`
+
+Sanitising email HTML hard enough to be safe also strips the tables and inline styles that make it
+render in Outlook — so `template_body` is stored exactly as written. The preview renders it in an
+iframe with `sandbox=""`: no `allow-scripts`, no `allow-same-origin`. That boundary costs nothing
+and loses nothing, which server-side sanitising cannot claim.
+
+### 18. The SPA lives under `/app`, and the API keeps the root
+
+`backend/app/spa.py`
+
+Same-origin, so the session cookie stays `SameSite=lax` and production needs no CORS at all. But
+the API already owns the root namespace: `/campaigns` is the campaign list *endpoint*, so the
+campaign list *page* cannot also be `/campaigns`. Rather than moving every documented API path
+under `/api` — which would mean re-registering the OAuth redirect URI in Azure — the SPA takes one
+prefix of its own.
+
+The catch-all serves the shell for `/app/*` only and 404s everything else. An allowlist, because a
+mistyped endpoint has to fail as a missing endpoint: answering `200` with HTML would make a client
+try to parse the page shell as JSON.
 
 ---
 
