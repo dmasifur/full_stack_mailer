@@ -21,8 +21,8 @@ Three processes share one Postgres database and one Redis instance:
 
 ```
 web:    uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips="*"
-worker: celery -A app.workers.celery.celery_app worker --loglevel=info --concurrency=4
-beat:   celery -A app.workers.celery.celery_app beat --loglevel=info
+worker: celery -A server.workers.celery.celery_app worker --loglevel=info --concurrency=4
+beat:   celery -A server.workers.celery.celery_app beat --loglevel=info
 ```
 
 > **Run exactly one beat process.** Two means duplicate reconciler ticks, and a campaign
@@ -47,7 +47,15 @@ what builds the SPA, so the SPA has to be inside the directory the web service c
 directory`, and frontend-only commits would not trigger a redeploy at all.
 
 `node` and `npm` ship with every native runtime, Python included, so nothing extra is needed to
-run `npm ci` from a Python service's build command.
+run `npm ci` from a Python service's build command. `NODE_ENV` is set only at runtime and only
+for Node services, so the build does install `devDependencies` — which is where `vite` and
+`tsc` live.
+
+The web service pins `NODE_VERSION`, because Render's default moves on its own schedule and CI
+would otherwise be validating a different major than the one that builds the deploy. It is set
+on the service rather than in a `.node-version` file: the env var takes precedence, and it
+leaves no question about which directory counts as the repo root once `rootDir` is set. Change
+it and `.github/workflows/ci.yml` together.
 
 The Python package inside `app/` is `server/` — named for the process it runs, since `app/` now
 holds the client too. That is why the worker commands read `-A server.workers.celery.celery_app`.
@@ -70,8 +78,14 @@ environment group (`mailer-config`).
 
 ### 2. Fill in the secrets
 
-Every `sync: false` variable in the `mailer-config` group must be set by hand. **The services
-will not boot until the four secrets are present.**
+Every `sync: false` variable in the `mailer-config` group must be set by hand. Six of them are
+required, and **the services will not boot without them**: `REDIS_URL`, `MICROSOFT_CLIENT_ID`,
+`MICROSOFT_CLIENT_SECRET`, `MICROSOFT_REDIRECT_URI`, `TOKEN_ENCRYPTION_KEY`, and `SECRET_KEY`.
+(`DATABASE_URL` is the seventh, and the Blueprint wires it for you.)
+
+`MICROSOFT_TENANT_ID` is **not** among them — the Blueprint sets it to `common`. It is
+interpolated straight into the Graph URLs, so leaving it blank would produce
+`login.microsoftonline.com//oauth2/...` rather than falling back to a default.
 
 Generate the two the app owns:
 
@@ -89,6 +103,10 @@ Take `MICROSOFT_CLIENT_ID` and `MICROSOFT_CLIENT_SECRET` from the Azure app regi
 
 Redis is deliberately **not** in the Blueprint — this project uses Upstash, which is external
 to Render. Set `REDIS_URL` on the environment group using the `rediss://` (TLS) URL.
+
+Get this right before the first deploy finishes. `/health` is the health check path and it
+returns `503` while Redis is unreachable, so a wrong URL does not show up as degraded rate
+limiting — it shows up as a deploy that never goes live.
 
 Upstash presents a publicly-trusted certificate, so leave `REDIS_SSL_CERT_REQS` at its
 `required` default. See [Redis TLS](#redis-tls) below.
@@ -196,13 +214,18 @@ rather than storing an object nobody can reach.
       cookies `Secure`, and stops `/health` disclosing database hostnames to unauthenticated
       callers. Set to `production` in `render.yaml`.
 - [ ] **Exactly one beat instance.**
+- [ ] **`NODE_VERSION` matches CI.** Set on the web service in `render.yaml`, mirrored by
+      `node-version` in `.github/workflows/ci.yml`. If they drift, a green build proves nothing
+      about the one Render runs.
 - [ ] **`--proxy-headers` on the web command.** Without it uvicorn sees the load balancer as
       the client and the OAuth login rate limit becomes one shared bucket for every user.
 - [ ] **`MICROSOFT_REDIRECT_URI` matches Azure exactly.**
 - [ ] **`ALLOWED_ORIGINS_RAW` contains no `*`.** The app refuses to start if it does, because
       credentials are enabled on CORS.
 - [ ] **Migrations ran** — `alembic upgrade head` against the production database.
-- [ ] **`/health` returns 200.** It checks Postgres and Redis; `503` means one is down.
+- [ ] **`/health` returns 200.** It checks Postgres and Redis, and `render.yaml` points
+      `healthCheckPath` at it — so `503` from either store is not just a warning, it stops the
+      deploy going live.
 
 ### Redis TLS
 
@@ -217,7 +240,7 @@ look at — but treat `none` as a stopgap, not a fix.
 
 | If this breaks | What happens |
 | --- | --- |
-| Redis unreachable | Rate limiting degrades to per-process counters; the API stays up. New campaigns cannot be queued — `/start` returns `503` and leaves the campaign untouched. |
+| Redis unreachable | The app itself survives: rate limiting degrades to per-process counters, and `/start` returns `503` leaving the campaign untouched. **Render does not.** `/health` reports `503` when either store is down, and it is the health check path — so the instance is marked unhealthy and taken out of service. A deploy with a bad `REDIS_URL` never goes live. |
 | Worker dies mid-campaign | The task is redelivered. Recipients stranded at `sending` are reclaimed after 30 minutes; already-sent addresses are skipped. |
 | Beat stops | Scheduled campaigns are not dispatched at their time. They are picked up as soon as beat returns — the database, not the broker, holds the schedule. |
 | Postgres unreachable | `/health` returns `503`. Nothing sends. |

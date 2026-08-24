@@ -33,8 +33,11 @@ envVarGroups:
         sync: false
       - key: MICROSOFT_CLIENT_SECRET
         sync: false
+      # "common" for multi-tenant. Replace with a tenant GUID to restrict
+      # sign-in to one directory. Not sync: false — it is interpolated straight
+      # into the Graph URLs, so a blank value yields login.microsoftonline.com//.
       - key: MICROSOFT_TENANT_ID
-        sync: false
+        value: common
       # Must match the Azure app registration exactly, e.g.
       # https://<your-web-service>.onrender.com/auth/microsoft/callback
       - key: MICROSOFT_REDIRECT_URI
@@ -99,6 +102,11 @@ services:
     preDeployCommand: uv run alembic upgrade head
     envVars:
       - fromGroup: mailer-config
+      # Only this service builds the frontend. Pinned so CI and Render compile
+      # on the same major — Render's default tracks its own schedule, and an
+      # unvalidated build environment is the one that breaks on deploy day.
+      - key: NODE_VERSION
+        value: "24"
       - key: DATABASE_URL
         fromDatabase:
           name: mailer-db

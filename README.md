@@ -28,7 +28,8 @@ Docs content, uploading inline images to R2 — or as raw email HTML, kept byte 
 - **A Cloudflare R2 bucket** — for HTML templates and for inline campaign images. Images also
   need the bucket's public read URL in `R2_PUBLIC_BASE_URL`: a recipient's mail client fetches
   them anonymously and cannot sign a request.
-- **Node 20+** — to build the frontend
+- **Node 22+** — to build the frontend. `engines` in `app/frontend/package.json` sets the
+  floor; CI and Render both build on 24, pinned by `NODE_VERSION`.
 
 ## Setup
 
