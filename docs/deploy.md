@@ -49,6 +49,9 @@ directory`, and frontend-only commits would not trigger a redeploy at all.
 `node` and `npm` ship with every native runtime, Python included, so nothing extra is needed to
 run `npm ci` from a Python service's build command.
 
+The Python package inside `app/` is `server/` — named for the process it runs, since `app/` now
+holds the client too. That is why the worker commands read `-A server.workers.celery.celery_app`.
+
 Deploying elsewhere? Same principle. On Heroku that means
 [`heroku-buildpack-monorepo`](https://github.com/lstoll/heroku-buildpack-monorepo) with
 `APP_BASE=app`; Heroku's Python buildpack also ships 3.14 and `uv`.
