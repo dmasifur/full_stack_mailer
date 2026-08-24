@@ -4,7 +4,7 @@ export interface AssetUploadResponse {
   readonly url: string;
 }
 
-/** What the backend's magic-byte sniff accepts. Mirrors app/api/assets.py. */
+/** What the backend's magic-byte sniff accepts. Mirrors server/api/assets.py. */
 export const ACCEPTED_IMAGE_TYPES = [
   "image/png",
   "image/jpeg",

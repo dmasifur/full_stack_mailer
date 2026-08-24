@@ -4,7 +4,7 @@ import { MERGE_TAGS, tokensToChips } from "./MergeTag";
 
 describe("MERGE_TAGS", () => {
   it("matches the fields the backend substitutes", () => {
-    // Mirrors _FIELDS in backend/app/services/merge_fields.py. If that list
+    // Mirrors _FIELDS in server/services/merge_fields.py. If that list
     // grows, this fails until they are brought back in step.
     expect(MERGE_TAGS.map((tag) => tag.token)).toEqual([
       "first_name",

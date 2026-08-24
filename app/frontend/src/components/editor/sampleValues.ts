@@ -2,7 +2,7 @@
  * Resolving merge tokens for the preview.
  *
  * Deliberately mirrors `render_merge_fields` in
- * backend/app/services/merge_fields.py, fallback syntax included: a preview
+ * server/services/merge_fields.py, fallback syntax included: a preview
  * that ignored the fallback would show a blank where a real send shows a word.
  */
 

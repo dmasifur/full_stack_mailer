@@ -11,7 +11,7 @@ import { splitEmails } from "@/lib/emails";
 import { CampaignBodyEditor } from "./editor/CampaignBodyEditor";
 import { Card, Field, Notice, inputClass } from "./ui/primitives";
 
-/** Matches CampaignCreate.cc_emails in backend/app/schemas/campaign.py. */
+/** Matches CampaignCreate.cc_emails in server/schemas/campaign.py. */
 const MAX_CC = 20;
 
 export interface CampaignFormValue {

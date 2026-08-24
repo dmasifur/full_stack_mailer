@@ -16,7 +16,7 @@ export interface MergeTagDefinition {
   readonly description: string;
 }
 
-/** Mirrors _FIELDS in backend/app/services/merge_fields.py. */
+/** Mirrors _FIELDS in server/services/merge_fields.py. */
 export const MERGE_TAGS: readonly MergeTagDefinition[] = [
   {
     token: "first_name",

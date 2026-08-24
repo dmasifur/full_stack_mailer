@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     R2_BUCKET_NAME: str = "mailer-templates"
 
     # Public read URL for the bucket, used only for inline campaign images.
-    # Empty disables image upload — see app/services/asset_storage.py.
+    # Empty disables image upload — see server/services/asset_storage.py.
     R2_PUBLIC_BASE_URL: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)

@@ -37,7 +37,7 @@ export function CampaignControls({
 
   const { status } = campaign;
 
-  // Mirrors _assert_sendable in backend/app/api/campaigns.py.
+  // Mirrors _assert_sendable in server/api/campaigns.py.
   const noRecipients = (stats?.total_recipients ?? 0) === 0;
   const validating = (stats?.awaiting_validation ?? 0) > 0;
   const sendable = !noRecipients && !validating;

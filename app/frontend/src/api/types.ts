@@ -1,5 +1,5 @@
 /**
- * Response shapes, mirroring backend/app/schemas/.
+ * Response shapes, mirroring server/schemas/.
  *
  * `npm run gen:api` regenerates a full schema from the live OpenAPI document;
  * these are the hand-kept subset the UI actually reads, so a field rename

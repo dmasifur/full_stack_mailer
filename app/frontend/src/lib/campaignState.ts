@@ -1,7 +1,7 @@
 /**
  * A mirror of the backend's campaign state machine.
  *
- * Kept in step with `backend/app/services/campaign_state.py` — change one and
+ * Kept in step with `server/services/campaign_state.py` — change one and
  * change the other. The API remains the authority; this exists so the UI can
  * disable an action that would be refused, rather than letting the user find
  * out through a 409.
